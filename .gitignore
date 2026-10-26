@@ -1,0 +1,31 @@
+﻿# Secrets — never commit credentials
+.env
+.env.*
+!.env.example
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / frontend builds
+node_modules/
+frontend/dist/
+
+# Local environment files
+.DS_Store
+
+# Local transaction database
+backend/paypilot.db
+backend/paypilot.db-wal
+backend/paypilot.db-shm
+
+# Local backups — do not publish historical copies
+*.bak
+*.backup
+*.backup-*
+*.payment-backup
+*.before-*
+*.marketplace-*
