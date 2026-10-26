@@ -100,6 +100,66 @@ def init_database():
             ON transactions(status)
         """)
 
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_orders (
+                id TEXT PRIMARY KEY,
+                paypal_order_id TEXT NOT NULL UNIQUE,
+                paypal_capture_id TEXT UNIQUE,
+                amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+                currency TEXT NOT NULL DEFAULT 'USD',
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING', 'COMPLETED', 'CANCELLED')),
+                inventory_applied INTEGER NOT NULL DEFAULT 0
+                    CHECK (inventory_applied IN (0, 1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_order_items (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                product_name TEXT NOT NULL,
+                unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor > 0),
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                line_total_minor INTEGER NOT NULL CHECK (line_total_minor > 0),
+                FOREIGN KEY (order_id) REFERENCES marketplace_orders(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_orders_status
+            ON marketplace_orders(status)
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_order_items_order
+            ON marketplace_order_items(order_id)
+        """)
+
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace_reconciliation (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL UNIQUE,
+                paypal_order_id TEXT NOT NULL,
+                paypal_capture_id TEXT,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'OPEN'
+                    CHECK (status IN ('OPEN', 'RESOLVED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (order_id) REFERENCES marketplace_orders(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_reconciliation_status
+            ON marketplace_reconciliation(status)
+        """)
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -359,6 +419,62 @@ def register_seller(request: SellerRegistrationRequest):
     }
 
 
+
+@app.get("/api/sellers/{seller_id}")
+def get_seller(seller_id: str):
+    """Return seller profile and approval status for the local demo."""
+    with database_connection() as connection:
+        seller = connection.execute(
+            """
+            SELECT id, display_name, email, status, created_at, updated_at
+            FROM sellers
+            WHERE id = ?
+            """,
+            (seller_id,),
+        ).fetchone()
+
+    if seller is None:
+        raise HTTPException(status_code=404, detail="Seller not found.")
+
+    return dict(seller)
+
+
+@app.get("/api/sellers/{seller_id}/products")
+def get_seller_products(seller_id: str, limit: int = 100):
+    """List products belonging to a seller, including drafts and archived items."""
+    limit = max(1, min(limit, 100))
+
+    with database_connection() as connection:
+        seller = connection.execute(
+            "SELECT id FROM sellers WHERE id = ?",
+            (seller_id,),
+        ).fetchone()
+
+        if seller is None:
+            raise HTTPException(status_code=404, detail="Seller not found.")
+
+        rows = connection.execute(
+            """
+            SELECT id, seller_id, name, description, category, price_minor,
+                   currency, image_url, inventory_quantity, status,
+                   created_at, updated_at
+            FROM products
+            WHERE seller_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (seller_id, limit),
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["price"] = f"{item['price_minor'] / 100:.2f}"
+        items.append(item)
+
+    return {"seller_id": seller_id, "products": items, "total": len(items)}
+
+
 @app.post("/api/sellers/{seller_id}/products", status_code=201)
 def create_seller_product(seller_id: str, request: ProductCreateRequest):
     """Create a draft product for an active seller."""
@@ -418,6 +534,51 @@ def create_seller_product(seller_id: str, request: ProductCreateRequest):
     }
 
 
+@app.get("/api/admin/sellers")
+def list_admin_sellers(
+    status: str = "PENDING",
+    limit: int = 100,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """List seller applications for authorized admin review."""
+    require_admin_token(x_admin_token)
+
+    status = status.strip().upper()
+    if status not in ("PENDING", "ACTIVE", "SUSPENDED", "ALL"):
+        raise HTTPException(
+            status_code=422,
+            detail="Status must be PENDING, ACTIVE, SUSPENDED, or ALL.",
+        )
+
+    limit = max(1, min(limit, 100))
+
+    with database_connection() as connection:
+        if status == "ALL":
+            rows = connection.execute(
+                """
+                SELECT id, display_name, email, status, created_at, updated_at
+                FROM sellers
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT id, display_name, email, status, created_at, updated_at
+                FROM sellers
+                WHERE status = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            ).fetchall()
+
+    sellers = [dict(row) for row in rows]
+    return {"sellers": sellers, "total": len(sellers), "status": status}
+
+
 @app.post("/api/admin/sellers/{seller_id}/approve")
 def approve_seller(seller_id: str, x_admin_token: str | None = Header(default=None, alias="X-Admin-Token")):
     """Development admin action. Pass the token in the X-Admin-Token header."""
@@ -437,6 +598,92 @@ def approve_seller(seller_id: str, x_admin_token: str | None = Header(default=No
         raise HTTPException(status_code=404, detail="Pending seller not found.")
 
     return {"seller_id": seller_id, "status": "ACTIVE"}
+
+
+@app.get("/api/admin/products")
+def list_admin_products(
+    status: str = "DRAFT",
+    limit: int = 100,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """List product submissions for authorized admin review."""
+    require_admin_token(x_admin_token)
+
+    if status not in {"DRAFT", "ACTIVE", "ARCHIVED"}:
+        raise HTTPException(status_code=400, detail="Unsupported product status.")
+
+    limit = max(1, min(limit, 100))
+
+    with database_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                p.id, p.seller_id, p.name, p.description, p.category,
+                p.price_minor, p.currency, p.image_url, p.inventory_quantity,
+                p.status, p.created_at, s.display_name AS seller_name,
+                s.email AS seller_email, s.status AS seller_status
+            FROM products p
+            JOIN sellers s ON s.id = p.seller_id
+            WHERE p.status = ?
+            ORDER BY p.created_at DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ).fetchall()
+
+    return {
+        "products": [
+            {
+                "id": row["id"],
+                "seller_id": row["seller_id"],
+                "seller_name": row["seller_name"],
+                "seller_email": row["seller_email"],
+                "seller_status": row["seller_status"],
+                "name": row["name"],
+                "description": row["description"],
+                "category": row["category"],
+                "price_minor": row["price_minor"],
+                "price": f"{row['price_minor'] / 100:.2f}",
+                "currency": row["currency"],
+                "image_url": row["image_url"],
+                "inventory_quantity": row["inventory_quantity"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+        "status": status,
+    }
+
+
+@app.post("/api/admin/products/{product_id}/reject")
+def reject_product(
+    product_id: str,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Archive a draft product that should not be published."""
+    require_admin_token(x_admin_token)
+    now = utc_now()
+
+    with database_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE products
+            SET status = 'ARCHIVED', updated_at = ?
+            WHERE id = ? AND status = 'DRAFT'
+            """,
+            (now, product_id),
+        )
+
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Draft product not found.")
+
+    return {
+        "product_id": product_id,
+        "status": "ARCHIVED",
+        "message": "Product submission rejected and archived.",
+    }
 
 
 @app.post("/api/admin/products/{product_id}/publish")
@@ -1142,3 +1389,475 @@ async def capture_paypal_order(order_id: str):
             else "Capture is not confirmed as completed. Check the order status."
         ),
     }
+
+# Marketplace checkout uses its own endpoints and return URL.
+class MarketplaceCartLine(BaseModel):
+    product_id: str = Field(min_length=1, max_length=80)
+    quantity: int = Field(ge=1, le=1000)
+
+
+class MarketplaceOrderRequest(BaseModel):
+    items: list[MarketplaceCartLine] = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/marketplace/orders")
+async def create_marketplace_order(request: MarketplaceOrderRequest):
+    """Create a PayPal Sandbox order from current marketplace catalogue prices."""
+    product_ids = [item.product_id for item in request.items]
+    if len(product_ids) != len(set(product_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Each product must appear only once in the cart.",
+        )
+
+    placeholders = ",".join("?" for _ in product_ids)
+    with database_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT p.id, p.name, p.description, p.price_minor,
+                   p.currency, p.inventory_quantity
+            FROM products p
+            JOIN sellers s ON s.id = p.seller_id
+            WHERE p.id IN ({placeholders})
+              AND p.status = 'ACTIVE'
+              AND s.status = 'ACTIVE'
+            """,
+            product_ids,
+        ).fetchall()
+
+    products_by_id = {row["id"]: dict(row) for row in rows}
+    if len(products_by_id) != len(product_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="A cart item is no longer available. Refresh the marketplace.",
+        )
+
+    item_snapshots = []
+    total_minor = 0
+
+    for line in request.items:
+        product = products_by_id[line.product_id]
+        if product["currency"] != "USD":
+            raise HTTPException(
+                status_code=409,
+                detail="Marketplace checkout currently supports USD products only.",
+            )
+        if line.quantity > product["inventory_quantity"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Not enough stock available for {product['name']}.",
+            )
+
+        line_total = product["price_minor"] * line.quantity
+        total_minor += line_total
+        item_snapshots.append({
+            "product_id": product["id"],
+            "product_name": product["name"],
+            "unit_price_minor": product["price_minor"],
+            "quantity": line.quantity,
+            "line_total_minor": line_total,
+        })
+
+    if total_minor <= 0:
+        raise HTTPException(status_code=422, detail="Order total must be positive.")
+
+    amount = f"{total_minor // 100}.{total_minor % 100:02d}"
+    local_order_id = str(uuid4())
+    token = await _paypal_access_token()
+
+    paypal_items = []
+    for item in item_snapshots:
+        unit_minor = item["unit_price_minor"]
+        paypal_items.append({
+            "name": item["product_name"][:127],
+            "quantity": str(item["quantity"]),
+            "unit_amount": {
+                "currency_code": "USD",
+                "value": f"{unit_minor // 100}.{unit_minor % 100:02d}",
+            },
+        })
+
+    payload = {
+        "intent": "CAPTURE",
+        "purchase_units": [{
+            "reference_id": local_order_id,
+            "description": f"PayPilot marketplace order {local_order_id[:8]}",
+            "amount": {
+                "currency_code": "USD",
+                "value": amount,
+                "breakdown": {
+                    "item_total": {
+                        "currency_code": "USD",
+                        "value": amount,
+                    },
+                },
+            },
+            "items": paypal_items,
+        }],
+        "application_context": {
+            "brand_name": "PayPilot AI",
+            "user_action": "PAY_NOW",
+            "return_url": "http://localhost:5173/?marketplace_paypal=return",
+            "cancel_url": "http://localhost:5173/?marketplace_paypal=cancel",
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "PayPal-Request-Id": local_order_id,
+                },
+                json=payload,
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach PayPal Sandbox to create the marketplace order.",
+        )
+
+    if response.status_code != 201:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal Sandbox could not create the marketplace order.",
+        )
+
+    paypal_data = response.json()
+    paypal_order_id = paypal_data.get("id")
+    approval_url = next(
+        (
+            link["href"]
+            for link in paypal_data.get("links", [])
+            if link.get("rel") in ("approve", "payer-action")
+        ),
+        None,
+    )
+
+    if not paypal_order_id or not approval_url:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal returned an incomplete marketplace order response.",
+        )
+
+    now = utc_now()
+    with database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO marketplace_orders (
+                id, paypal_order_id, amount_minor, currency, status,
+                inventory_applied, created_at, updated_at
+            ) VALUES (?, ?, ?, 'USD', 'PENDING', 0, ?, ?)
+            """,
+            (local_order_id, paypal_order_id, total_minor, now, now),
+        )
+        for item in item_snapshots:
+            connection.execute(
+                """
+                INSERT INTO marketplace_order_items (
+                    id, order_id, product_id, product_name,
+                    unit_price_minor, quantity, line_total_minor
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()), local_order_id, item["product_id"],
+                    item["product_name"], item["unit_price_minor"],
+                    item["quantity"], item["line_total_minor"],
+                ),
+            )
+
+    return {
+        "status": "created",
+        "order_id": paypal_order_id,
+        "approval_url": approval_url,
+        "amount": amount,
+        "currency": "USD",
+        "message": "Marketplace order created. Buyer approval is required.",
+        "payment_captured": False,
+    }
+
+
+@app.post("/api/marketplace/orders/{order_id}/capture")
+async def capture_marketplace_order(order_id: str):
+    """Capture an order and safely reconcile inventory conflicts."""
+    if not re.fullmatch(r"[A-Z0-9-]{5,50}", order_id):
+        raise HTTPException(status_code=422, detail="Invalid PayPal order ID.")
+
+    with database_connection() as connection:
+        order_row = connection.execute(
+            "SELECT * FROM marketplace_orders WHERE paypal_order_id = ?",
+            (order_id,),
+        ).fetchone()
+        if order_row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Marketplace order was not found in this PayPilot AI instance.",
+            )
+
+        order = dict(order_row)
+        items = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM marketplace_order_items WHERE order_id = ?",
+                (order["id"],),
+            ).fetchall()
+        ]
+        open_case_row = connection.execute(
+            """
+            SELECT * FROM marketplace_reconciliation
+            WHERE order_id = ? AND status = 'OPEN'
+            """,
+            (order["id"],),
+        ).fetchone()
+        open_case = dict(open_case_row) if open_case_row else None
+
+    if order["status"] == "COMPLETED" and order["inventory_applied"]:
+        return {
+            "status": "COMPLETED",
+            "order_id": order_id,
+            "payment_captured": True,
+            "message": "Marketplace order was already completed.",
+        }
+
+    if open_case:
+        return {
+            "status": "RECONCILIATION_REQUIRED",
+            "order_id": order_id,
+            "payment_captured": True,
+            "capture_ids": [open_case["paypal_capture_id"]]
+                if open_case["paypal_capture_id"] else [],
+            "message": (
+                "This payment has already been captured and is awaiting inventory "
+                "reconciliation. Do not retry payment."
+            ),
+        }
+
+    token = await _paypal_access_token()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/capture",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "PayPal-Request-Id": order["id"],
+                },
+                json={},
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach PayPal Sandbox to capture this order.",
+        )
+
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal could not capture this order. Confirm buyer approval and retry.",
+        )
+
+    data = response.json()
+    captures = [
+        capture
+        for unit in data.get("purchase_units", [])
+        for capture in unit.get("payments", {}).get("captures", [])
+    ]
+    completed_capture = next(
+        (capture for capture in captures if capture.get("status") == "COMPLETED"),
+        None,
+    )
+
+    expected_amount = (
+        f"{order['amount_minor'] // 100}.{order['amount_minor'] % 100:02d}"
+    )
+    capture_amount = (
+        completed_capture.get("amount", {}) if completed_capture else {}
+    )
+    verified = (
+        data.get("id") == order_id
+        and data.get("status") == "COMPLETED"
+        and completed_capture is not None
+        and bool(completed_capture.get("id"))
+        and capture_amount.get("currency_code") == order["currency"]
+        and capture_amount.get("value") == expected_amount
+    )
+
+    if not verified:
+        return {
+            "status": data.get("status", "UNKNOWN"),
+            "order_id": data.get("id"),
+            "payment_captured": False,
+            "message": (
+                "PayPal has not returned a capture matching this marketplace order. "
+                "The order was not marked completed and inventory was not changed."
+            ),
+        }
+
+    capture_id = completed_capture["id"]
+    now = utc_now()
+    inventory_conflict_reason = None
+
+    # Serialize finalization. A savepoint lets us roll back every stock change
+    # while still committing a reconciliation record in the outer transaction.
+    with database_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current_row = connection.execute(
+            "SELECT * FROM marketplace_orders WHERE id = ?",
+            (order["id"],),
+        ).fetchone()
+
+        if current_row is None:
+            raise HTTPException(status_code=404, detail="Marketplace order not found.")
+
+        current = dict(current_row)
+        if current["status"] == "COMPLETED" and current["inventory_applied"]:
+            return {
+                "status": "COMPLETED",
+                "order_id": order_id,
+                "payment_captured": True,
+                "message": "Marketplace order was already completed.",
+            }
+
+        open_case_row = connection.execute(
+            """
+            SELECT * FROM marketplace_reconciliation
+            WHERE order_id = ? AND status = 'OPEN'
+            """,
+            (order["id"],),
+        ).fetchone()
+        if open_case_row:
+            open_case = dict(open_case_row)
+            return {
+                "status": "RECONCILIATION_REQUIRED",
+                "order_id": order_id,
+                "payment_captured": True,
+                "capture_ids": [open_case["paypal_capture_id"]]
+                    if open_case["paypal_capture_id"] else [],
+                "message": (
+                    "This payment is already awaiting reconciliation. "
+                    "Do not retry payment."
+                ),
+            }
+
+        connection.execute("SAVEPOINT inventory_apply")
+
+        for item in items:
+            cursor = connection.execute(
+                """
+                UPDATE products
+                SET inventory_quantity = inventory_quantity - ?, updated_at = ?
+                WHERE id = ? AND status = 'ACTIVE'
+                  AND inventory_quantity >= ?
+                """,
+                (
+                    item["quantity"], now, item["product_id"],
+                    item["quantity"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                inventory_conflict_reason = (
+                    f"Inventory finalization failed for product "
+                    f"{item['product_name']!r}; stock may be insufficient "
+                    "or the product may no longer be active."
+                )
+                break
+
+        if inventory_conflict_reason:
+            connection.execute("ROLLBACK TO SAVEPOINT inventory_apply")
+            connection.execute("RELEASE SAVEPOINT inventory_apply")
+
+            connection.execute(
+                """
+                INSERT INTO marketplace_reconciliation (
+                    id, order_id, paypal_order_id, paypal_capture_id,
+                    reason, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    paypal_order_id = excluded.paypal_order_id,
+                    paypal_capture_id = excluded.paypal_capture_id,
+                    reason = excluded.reason,
+                    status = 'OPEN',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(uuid4()), order["id"], order_id, capture_id,
+                    inventory_conflict_reason, now, now,
+                ),
+            )
+        else:
+            connection.execute("RELEASE SAVEPOINT inventory_apply")
+            connection.execute(
+                """
+                UPDATE marketplace_orders
+                SET status = 'COMPLETED', paypal_capture_id = ?,
+                    inventory_applied = 1, updated_at = ?
+                WHERE id = ? AND inventory_applied = 0
+                """,
+                (capture_id, now, order["id"]),
+            )
+
+    if inventory_conflict_reason:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "PayPal reports a successful capture, but inventory could not be "
+                "finalized. A reconciliation case was recorded. Do not retry payment."
+            ),
+        )
+
+    return {
+        "status": "COMPLETED",
+        "order_id": order_id,
+        "capture_ids": [capture_id],
+        "payment_captured": True,
+        "message": "Marketplace payment captured and inventory updated.",
+    }
+
+@app.get("/api/marketplace/orders")
+def list_marketplace_orders(limit: int = 50):
+    """List recent marketplace orders for the internal/demo workspace.
+
+    This is not a private customer order-history endpoint. Buyer ownership
+    and account authorization must be implemented before public deployment.
+    """
+    limit = max(1, min(limit, 100))
+
+    with database_connection() as connection:
+        orders = connection.execute(
+            """
+            SELECT id, paypal_order_id, paypal_capture_id,
+                   amount_minor, currency, status, created_at, updated_at
+            FROM marketplace_orders
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        results = []
+        for order in orders:
+            items = connection.execute(
+                """
+                SELECT product_id, product_name, unit_price_minor,
+                       quantity, line_total_minor
+                FROM marketplace_order_items
+                WHERE order_id = ?
+                ORDER BY rowid
+                """,
+                (order["id"],),
+            ).fetchall()
+
+            results.append({
+                "id": order["id"],
+                "paypal_order_id": order["paypal_order_id"],
+                "paypal_capture_id": order["paypal_capture_id"],
+                "amount_minor": order["amount_minor"],
+                "currency": order["currency"],
+                "status": order["status"],
+                "created_at": order["created_at"],
+                "updated_at": order["updated_at"],
+                "items": [dict(item) for item in items],
+            })
+
+    return {"orders": results, "count": len(results)}

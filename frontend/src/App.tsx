@@ -1,4 +1,4 @@
-import {
+﻿import {
   Activity,
   ArrowDownLeft,
   ArrowUpRight,
@@ -17,6 +17,9 @@ import {
   ShieldCheck,
   Search,
   ShoppingBag,
+  ShoppingCart,
+  Minus,
+  Trash2,
   Store,
   RefreshCw,
   Sparkles,
@@ -86,6 +89,100 @@ type MarketplaceResponse = {
 
 type ShoppingChatMessage = { role: "assistant" | "user"; text: string };
 
+type CartItem = {
+  product: MarketplaceProduct;
+  quantity: number;
+};
+
+type MarketplaceOrderItem = {
+  product_id: string;
+  product_name: string;
+  unit_price_minor: number;
+  quantity: number;
+  line_total_minor: number;
+};
+
+type MarketplaceOrder = {
+  id: string;
+  paypal_order_id: string;
+  paypal_capture_id: string | null;
+  amount_minor: number;
+  currency: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  items: MarketplaceOrderItem[];
+};
+
+type AdminDraftProduct = {
+  id: string;
+  seller_id: string;
+  seller_name: string;
+  seller_email: string;
+  seller_status: string;
+  name: string;
+  description: string;
+  category: string;
+  price_minor: number;
+  price: string;
+  currency: string;
+  image_url: string | null;
+  inventory_quantity: number;
+  status: string;
+  created_at?: string;
+};
+
+type SellerProfile = {
+  id: string;
+  display_name: string;
+  email: string;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type SellerProduct = {
+  id: string;
+  seller_id: string;
+  name: string;
+  description: string;
+  category: string;
+  price_minor: number;
+  price: string;
+  currency: string;
+  image_url: string | null;
+  inventory_quantity: number;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type SellerApplication = {
+  id: string;
+  display_name: string;
+  email: string;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type AdminSellersResponse = {
+  sellers: SellerApplication[];
+  total: number;
+  status: string;
+};
+
+type AdminDraftsResponse = {
+  products: AdminDraftProduct[];
+  total: number;
+  status: string;
+};
+
+type MarketplaceOrdersResponse = {
+  orders: MarketplaceOrder[];
+  count: number;
+};
+
 function App() {
   const [message, setMessage] = useState("");
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -98,15 +195,56 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   const [dashboardError, setDashboardError] = useState("");
   const [sending, setSending] = useState(false);
 
-  const [activeView, setActiveView] = useState<"overview" | "marketplace">("overview");
+  const [activeView, setActiveView] = useState<"overview" | "marketplace" | "orders" | "admin" | "seller">("overview");
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [productSearch, setProductSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [productsLoading, setProductsLoading] = useState(false);
   const [productsError, setProductsError] = useState("");
   const [catalogueReload, setCatalogueReload] = useState(0);
+  const [draftSellerId, setDraftSellerId] = useState("2f9415cc-281d-4fab-8d3d-6dcae6d7c523");
+  const [draftName, setDraftName] = useState("");
+  const [draftDescription, setDraftDescription] = useState("");
+  const [draftCategory, setDraftCategory] = useState("General");
+  const [draftPrice, setDraftPrice] = useState("");
+  const [draftStock, setDraftStock] = useState("1");
+  const [draftImageUrl, setDraftImageUrl] = useState("");
+  const [draftSubmitting, setDraftSubmitting] = useState(false);
+  const [draftNotice, setDraftNotice] = useState("");
+  const [draftNoticeType, setDraftNoticeType] = useState<"success" | "error">("success");
+
+  // Local demo admin access. Never persist this token in localStorage.
+  const [adminToken, setAdminToken] = useState("");
+  const [adminDrafts, setAdminDrafts] = useState<AdminDraftProduct[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState("");
+  const [adminNotice, setAdminNotice] = useState("");
+  const [adminBusyProductId, setAdminBusyProductId] = useState("");
+  const [adminSellers, setAdminSellers] = useState<SellerApplication[]>([]);
+  const [adminSellersLoading, setAdminSellersLoading] = useState(false);
+  const [adminBusySellerId, setAdminBusySellerId] = useState("");
+  const [sellerName, setSellerName] = useState("");
+  const [sellerEmail, setSellerEmail] = useState("");
+  const [sellerRegistering, setSellerRegistering] = useState(false);
+  const [sellerLookupId, setSellerLookupId] = useState("2f9415cc-281d-4fab-8d3d-6dcae6d7c523");
+  const [sellerProfile, setSellerProfile] = useState<SellerProfile | null>(null);
+  const [sellerProducts, setSellerProducts] = useState<SellerProduct[]>([]);
+  const [sellerLoading, setSellerLoading] = useState(false);
+  const [sellerError, setSellerError] = useState("");
+  const [sellerNotice, setSellerNotice] = useState("");
+
+
+  const [orders, setOrders] = useState<MarketplaceOrder[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState("");
+  const [ordersReload, setOrdersReload] = useState(0);
   const [shoppingMessage, setShoppingMessage] = useState("");
   const [shoppingSending, setShoppingSending] = useState(false);
+  const [marketplaceCheckoutBusy, setMarketplaceCheckoutBusy] = useState(false);
+  const [marketplaceNotice, setMarketplaceNotice] = useState("");
+  const [marketplaceNoticeType, setMarketplaceNoticeType] =
+    useState<"success" | "error" | "info">("info");
   const [shoppingConversation, setShoppingConversation] = useState<ShoppingChatMessage[]>([
     {
       role: "assistant",
@@ -130,6 +268,300 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
       selectedCategory === "All" || product.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
+
+  const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  const cartTotalMinor = cartItems.reduce(
+    (sum, item) => sum + item.product.price_minor * item.quantity,
+    0
+  );
+
+  async function handleMarketplaceCheckout() {
+    if (cartItems.length === 0 || marketplaceCheckoutBusy) return;
+
+    setMarketplaceCheckoutBusy(true);
+    setMarketplaceNotice("");
+    setMarketplaceNoticeType("info");
+
+    try {
+      const response = await fetch("http://127.0.0.1:8001/api/marketplace/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: cartItems.map(({ product, quantity }) => ({
+            product_id: product.id,
+            quantity,
+          })),
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : "Unable to start marketplace checkout."
+        );
+      }
+
+      if (!data.approval_url || !data.order_id) {
+        throw new Error("The server did not return a PayPal approval link.");
+      }
+
+      window.location.assign(data.approval_url);
+    } catch (error) {
+      setMarketplaceNotice(
+        error instanceof Error ? error.message : "Marketplace checkout failed."
+      );
+      setMarketplaceNoticeType("error");
+      setMarketplaceCheckoutBusy(false);
+    }
+  }
+
+  function addToCart(product: MarketplaceProduct) {
+    setCartItems((current) => {
+      const existing = current.find((item) => item.product.id === product.id);
+      if (existing) {
+        if (existing.quantity >= product.inventory_quantity) return current;
+        return current.map((item) =>
+          item.product.id === product.id
+            ? { ...item, product, quantity: item.quantity + 1 }
+            : item
+        );
+      }
+      if (product.inventory_quantity < 1) return current;
+      return [...current, { product, quantity: 1 }];
+    });
+  }
+
+  function changeCartQuantity(productId: string, delta: number) {
+    setCartItems((current) =>
+      current
+        .map((item) => {
+          if (item.product.id !== productId) return item;
+          const quantity = Math.min(
+            item.product.inventory_quantity,
+            item.quantity + delta
+          );
+          return { ...item, quantity };
+        })
+        .filter((item) => item.quantity > 0)
+    );
+  }
+
+  function removeFromCart(productId: string) {
+    setCartItems((current) =>
+      current.filter((item) => item.product.id !== productId)
+    );
+  }
+
+
+  async function submitProductDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDraftSubmitting(true);
+    setDraftNotice("");
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8001/api/sellers/${encodeURIComponent(draftSellerId.trim())}/products`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: draftName.trim(),
+            description: draftDescription.trim(),
+            category: draftCategory.trim(),
+            price: draftPrice,
+            currency: "USD",
+            inventory_quantity: Number(draftStock),
+            image_url: draftImageUrl.trim() || null,
+          }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Product submission failed."
+        );
+      }
+
+      setDraftNotice(
+        `Draft saved: ${data.name}. An administrator must publish it before it appears in the marketplace.`
+      );
+      setDraftNoticeType("success");
+      setDraftName("");
+      setDraftDescription("");
+      setDraftCategory("General");
+      setDraftPrice("");
+      setDraftStock("1");
+      setDraftImageUrl("");
+      if (sellerProfile?.id === draftSellerId.trim()) {
+        await loadSellerDashboard(sellerProfile.id);
+      }
+    } catch (error) {
+      setDraftNotice(
+        error instanceof Error ? error.message : "Product submission failed."
+      );
+      setDraftNoticeType("error");
+    } finally {
+      setDraftSubmitting(false);
+    }
+  }
+
+  async function loadAdminSellers() {
+    if (!adminToken.trim()) {
+      setAdminError("Enter the admin token to load seller applications.");
+      return;
+    }
+
+    setAdminSellersLoading(true);
+    setAdminError("");
+
+    try {
+      const response = await fetch("/api/admin/sellers?status=PENDING&limit=100", {
+        headers: { "X-Admin-Token": adminToken.trim() },
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not load seller applications.");
+      }
+
+      const result = data as AdminSellersResponse;
+      setAdminSellers(Array.isArray(result.sellers) ? result.sellers : []);
+    } catch (error) {
+      setAdminError(
+        error instanceof Error ? error.message : "Could not load seller applications."
+      );
+    } finally {
+      setAdminSellersLoading(false);
+    }
+  }
+
+  async function approveSellerApplication(seller: SellerApplication) {
+    if (!adminToken.trim()) {
+      setAdminError("Enter the admin token before approving a seller.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Approve "${seller.display_name}"? This will activate the seller account.`
+    );
+    if (!confirmed) return;
+
+    setAdminBusySellerId(seller.id);
+    setAdminError("");
+    setAdminNotice("");
+
+    try {
+      const response = await fetch(
+        `/api/admin/sellers/${encodeURIComponent(seller.id)}/approve`,
+        {
+          method: "POST",
+          headers: { "X-Admin-Token": adminToken.trim() },
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not approve this seller.");
+      }
+
+      await loadAdminSellers();
+      await loadAdminDrafts();
+      setAdminNotice(`"${seller.display_name}" has been approved. They can now submit product listings.`);
+    } catch (error) {
+      setAdminError(
+        error instanceof Error ? error.message : "Could not approve this seller."
+      );
+    } finally {
+      setAdminBusySellerId("");
+    }
+  }
+
+  async function loadAdminDrafts() {
+    if (!adminToken.trim()) {
+      setAdminError("Enter the admin token to load product submissions.");
+      return;
+    }
+
+    setAdminLoading(true);
+    setAdminError("");
+    setAdminNotice("");
+
+    try {
+      const response = await fetch("/api/admin/products?status=DRAFT&limit=100", {
+        headers: { "X-Admin-Token": adminToken.trim() },
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : "Could not load product submissions."
+        );
+      }
+
+      const result = data as AdminDraftsResponse;
+      setAdminDrafts(Array.isArray(result.products) ? result.products : []);
+    } catch (error) {
+      setAdminError(
+        error instanceof Error ? error.message : "Could not load product submissions."
+      );
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
+  async function reviewProduct(product: AdminDraftProduct, action: "publish" | "reject") {
+    if (!adminToken.trim() || adminBusyProductId) return;
+
+    const confirmed = window.confirm(
+      action === "publish"
+        ? `Publish "${product.name}" to the public marketplace?`
+        : `Reject and archive "${product.name}"?`
+    );
+    if (!confirmed) return;
+
+    setAdminBusyProductId(product.id);
+    setAdminError("");
+    setAdminNotice("");
+
+    try {
+      const response = await fetch(
+        `/api/admin/products/${encodeURIComponent(product.id)}/${action}`,
+        {
+          method: "POST",
+          headers: { "X-Admin-Token": adminToken.trim() },
+        }
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : `Could not ${action} this product.`
+        );
+      }
+
+      setAdminNotice(
+        action === "publish"
+          ? `"${product.name}" is now published.`
+          : `"${product.name}" was rejected and archived.`
+      );
+
+      await loadAdminDrafts();
+      setCatalogueReload((value) => value + 1);
+    } catch (error) {
+      setAdminError(
+        error instanceof Error ? error.message : `Could not ${action} this product.`
+      );
+    } finally {
+      setAdminBusyProductId("");
+    }
+  }
 
   const [conversation, setConversation] = useState([
     {
@@ -178,6 +610,44 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   }, [activeView, catalogueReload]);
 
   useEffect(() => {
+    if (activeView !== "orders") return;
+
+    let cancelled = false;
+
+    async function loadOrders() {
+      setOrdersLoading(true);
+      setOrdersError("");
+
+      try {
+        const response = await fetch("/api/marketplace/orders?limit=50");
+        if (!response.ok) {
+          throw new Error("Could not load marketplace orders.");
+        }
+
+        const data = (await response.json()) as MarketplaceOrdersResponse;
+        if (!cancelled) {
+          setOrders(Array.isArray(data.orders) ? data.orders : []);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setOrdersError(
+            error instanceof Error
+              ? error.message
+              : "Could not load marketplace orders."
+          );
+        }
+      } finally {
+        if (!cancelled) setOrdersLoading(false);
+      }
+    }
+
+    void loadOrders();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, ordersReload]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadDashboard() {
@@ -204,6 +674,77 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     };
   }, []);
 
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const marketplaceState = params.get("marketplace_paypal");
+    const orderId = params.get("token");
+
+    if (marketplaceState !== "return" && marketplaceState !== "cancel") return;
+
+    window.history.replaceState({}, document.title, window.location.pathname);
+
+    if (marketplaceState === "cancel") {
+      setMarketplaceNotice("PayPal checkout was cancelled. Your cart is unchanged.");
+      setMarketplaceNoticeType("error");
+      return;
+    }
+
+    if (!orderId) {
+      setMarketplaceNotice("PayPal returned without an order ID. Your cart is unchanged.");
+      setMarketplaceNoticeType("error");
+      return;
+    }
+
+    let cancelled = false;
+
+    async function captureMarketplaceOrder() {
+      setMarketplaceCheckoutBusy(true);
+      setMarketplaceNotice("Confirming your marketplace payment with PayPal Sandbox...");
+      setMarketplaceNoticeType("info");
+
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:8001/api/marketplace/orders/${encodeURIComponent(orderId!)}/capture`,
+          { method: "POST" }
+        );
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            typeof data.detail === "string"
+              ? data.detail
+              : "Could not confirm your marketplace payment."
+          );
+        }
+
+        if (!data.payment_captured) {
+          throw new Error(data.message || "PayPal has not confirmed the payment.");
+        }
+
+        if (cancelled) return;
+
+        setCartItems([]);
+        setCatalogueReload((current) => current + 1);
+        setMarketplaceNotice("Payment successful! Your marketplace order is confirmed.");
+        setMarketplaceNoticeType("success");
+      } catch (error) {
+        if (cancelled) return;
+        setMarketplaceNotice(
+          error instanceof Error ? error.message : "Payment confirmation failed."
+        );
+        setMarketplaceNoticeType("error");
+      } finally {
+        if (!cancelled) setMarketplaceCheckoutBusy(false);
+      }
+    }
+
+    void captureMarketplaceOrder();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -409,6 +950,79 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     }
   }
 
+  async function loadSellerDashboard(requestedId = sellerLookupId) {
+    const id = requestedId.trim();
+    if (!id) {
+      setSellerError("Enter a seller ID to load a store.");
+      return;
+    }
+
+    setSellerLoading(true);
+    setSellerError("");
+    setSellerNotice("");
+
+    try {
+      const [profileResponse, productsResponse] = await Promise.all([
+        fetch(`http://127.0.0.1:8001/api/sellers/${encodeURIComponent(id)}`),
+        fetch(`http://127.0.0.1:8001/api/sellers/${encodeURIComponent(id)}/products?limit=100`),
+      ]);
+
+      const profileData = await profileResponse.json().catch(() => ({}));
+      const productsData = await productsResponse.json().catch(() => ({}));
+
+      if (!profileResponse.ok) {
+        throw new Error(profileData.detail || "Could not load this seller. Check the seller ID.");
+      }
+      if (!productsResponse.ok) {
+        throw new Error(productsData.detail || "Could not load the seller's products.");
+      }
+
+      setSellerProfile(profileData as SellerProfile);
+      setSellerProducts(Array.isArray(productsData.products) ? productsData.products : []);
+      setSellerLookupId(id);
+      setDraftSellerId(id);
+    } catch (error) {
+      setSellerProfile(null);
+      setSellerProducts([]);
+      setSellerError(error instanceof Error ? error.message : "Unable to load seller dashboard.");
+    } finally {
+      setSellerLoading(false);
+    }
+  }
+
+  async function registerSeller(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSellerRegistering(true);
+    setSellerError("");
+    setSellerNotice("");
+
+    try {
+      const response = await fetch("http://127.0.0.1:8001/api/sellers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          display_name: sellerName.trim(),
+          email: sellerEmail.trim(),
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || "Seller registration failed.");
+      }
+
+      setSellerName("");
+      setSellerEmail("");
+      setSellerLookupId(data.id);
+      setSellerNotice(data.message || "Registration submitted for review.");
+      await loadSellerDashboard(data.id);
+    } catch (error) {
+      setSellerError(error instanceof Error ? error.message : "Unable to register seller.");
+    } finally {
+      setSellerRegistering(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -423,10 +1037,31 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <a className="nav-item" href="#assistant"><BrainCircuit size={18} /> AI Assistant <span className="nav-badge">AI</span></a>
           <button
             type="button"
+            className={`nav-item${activeView === "seller" ? " active" : ""}`}
+            onClick={() => setActiveView("seller")}
+          >
+            <Store size={18} /> Seller Dashboard
+          </button>
+          <button
+            type="button"
             className={`nav-item${activeView === "marketplace" ? " active" : ""}`}
             onClick={() => setActiveView("marketplace")}
           >
             <ShoppingBag size={18} /> Marketplace
+          </button>
+          <button
+            type="button"
+            className={`nav-item${activeView === "orders" ? " active" : ""}`}
+            onClick={() => setActiveView("orders")}
+          >
+            <Activity size={18} /> Orders
+          </button>
+          <button
+            type="button"
+            className={`nav-item${activeView === "admin" ? " active" : ""}`}
+            onClick={() => setActiveView("admin")}
+          >
+            <ShieldCheck size={18} /> Admin Review
           </button>
           <a className="nav-item" href="#transactions"><Activity size={18} /> Transactions</a>
           <a className="nav-item" href="#payments"><Wallet size={18} /> Payments</a>
@@ -464,6 +1099,629 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
         <div className="page-content">
 
+  {activeView === "orders" && (
+    <section className="marketplace-view" id="orders">
+      <div className="marketplace-hero">
+        <div>
+          <span className="marketplace-eyebrow">PAYPILOT COMMERCE</span>
+          <h1>Order history</h1>
+          <p>Review recent marketplace purchases and their payment status.</p>
+        </div>
+        <button
+          type="button"
+          className="marketplace-secondary-button"
+          onClick={() => setOrdersReload((value) => value + 1)}
+          disabled={ordersLoading}
+        >
+          <RefreshCw size={16} /> Refresh orders
+        </button>
+      </div>
+
+      {ordersLoading && (
+        <div className="marketplace-message">Loading marketplace orders...</div>
+      )}
+
+      {!ordersLoading && ordersError && (
+        <div className="marketplace-message" role="alert">
+          <p>{ordersError}</p>
+          <button
+            type="button"
+            onClick={() => setOrdersReload((value) => value + 1)}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {!ordersLoading && !ordersError && orders.length === 0 && (
+        <div className="marketplace-message">
+          <h2>No orders yet</h2>
+          <p>Marketplace purchases will appear here after checkout.</p>
+        </div>
+      )}
+
+      {!ordersLoading && !ordersError && orders.length > 0 && (
+        <div style={{ display: "grid", gap: 16, marginTop: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <h2 style={{ margin: 0 }}>Recent orders</h2>
+              <p style={{ margin: "6px 0 0", color: "var(--text-muted, #737789)" }}>
+                {orders.length} order{orders.length === 1 ? "" : "s"} loaded
+              </p>
+            </div>
+            <strong>
+              {formatMoney(
+                orders
+                  .filter((order) => order.status === "COMPLETED")
+                  .reduce((total, order) => total + order.amount_minor, 0) / 100,
+                orders.find((order) => order.status === "COMPLETED")?.currency || "USD"
+              )} completed order value
+            </strong>
+          </div>
+
+          {orders.map((order) => (
+            <article
+              key={order.id}
+              style={{
+                background: "var(--panel, #ffffff)",
+                border: "1px solid var(--border, #e7e8ee)",
+                borderRadius: 16,
+                padding: 20,
+                display: "grid",
+                gap: 14,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <h3 style={{ margin: "0 0 6px" }}>
+                    Order #{order.id.slice(0, 8)}
+                  </h3>
+                  <p style={{ margin: 0, color: "var(--text-muted, #737789)", fontSize: 13 }}>
+                    {formatTransactionDate(order.created_at)}
+                  </p>
+                </div>
+                <span
+                  style={{
+                    display: "inline-block",
+                    borderRadius: 999,
+                    padding: "6px 11px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    background: order.status === "COMPLETED" ? "#e7f8ee" : "#fff3d6",
+                    color: order.status === "COMPLETED" ? "#18794e" : "#8a5a00",
+                  }}
+                >
+                  {order.status}
+                </span>
+              </div>
+
+              <div style={{ display: "grid", gap: 12 }}>
+                {order.items.map((item) => (
+                  <div
+                    key={`${order.id}-${item.product_id}`}
+                    style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}
+                  >
+                    <div>
+                      <strong>{item.product_name}</strong>
+                      <p style={{ margin: "5px 0 0", color: "var(--text-muted, #737789)", fontSize: 13 }}>
+                        Qty {item.quantity} ? {formatMoney(item.unit_price_minor / 100, order.currency)}
+                      </p>
+                    </div>
+                    <strong>
+                      {formatMoney(item.line_total_minor / 100, order.currency)}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ borderTop: "1px solid var(--border, #e7e8ee)", paddingTop: 14, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <span style={{ color: "var(--text-muted, #737789)", fontSize: 12 }}>PayPal order reference</span>
+                  <div style={{ fontSize: 13, overflowWrap: "anywhere" }}>{order.paypal_order_id}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <span style={{ color: "var(--text-muted, #737789)", fontSize: 12 }}>Order total</span>
+                  <div style={{ fontSize: 20, fontWeight: 750 }}>
+                    {formatMoney(order.amount_minor / 100, order.currency)}
+                  </div>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      <p className="marketplace-product-note" style={{ marginTop: 20 }}>
+        Internal demo order history. Customer accounts and private, buyer-specific order access are not implemented yet. Payments shown here are from PayPal Sandbox.
+      </p>
+    </section>
+  )}
+
+  {activeView === "seller" && (
+    <section className="marketplace-view" id="seller-dashboard">
+      <div className="marketplace-hero">
+        <div>
+          <span className="marketplace-eyebrow">PAYPILOT COMMERCE</span>
+          <h1>Seller Dashboard</h1>
+          <p>Register your store, track approval, and manage your product submissions.</p>
+        </div>
+        <div className="marketplace-hero-icon"><Store size={28} /></div>
+      </div>
+
+      <section style={{ margin: "20px 0", padding: 24, border: "1px solid var(--border, #e7e8ef)", borderRadius: 18, background: "var(--surface, #fff)" }}>
+        <h2 style={{ marginTop: 0 }}>Register your store</h2>
+        <p style={{ color: "var(--text-muted, #737789)" }}>
+          New sellers start as pending. An administrator must approve the store before it can submit product listings.
+        </p>
+        <form onSubmit={registerSeller} style={{ display: "grid", gap: 12 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            Store name
+            <input value={sellerName} onChange={(event) => setSellerName(event.target.value)} required minLength={2} maxLength={120} placeholder="e.g. Darchums Store" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+          </label>
+          <label style={{ display: "grid", gap: 6 }}>
+            Contact email
+            <input type="email" value={sellerEmail} onChange={(event) => setSellerEmail(event.target.value)} required placeholder="you@example.com" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+          </label>
+          <button type="submit" disabled={sellerRegistering} className="primary-button" style={{ justifySelf: "start", padding: "10px 16px", borderRadius: 9 }}>
+            {sellerRegistering ? "Registering..." : "Register store"}
+          </button>
+        </form>
+      </section>
+
+      <section style={{ margin: "20px 0", padding: 24, border: "1px solid var(--border, #e7e8ef)", borderRadius: 18, background: "var(--surface, #fff)" }}>
+        <h2 style={{ marginTop: 0 }}>Load your store</h2>
+        <p style={{ color: "var(--text-muted, #737789)" }}>Enter your seller ID to view its approval status and product listings.</p>
+        <form onSubmit={(event) => { event.preventDefault(); void loadSellerDashboard(); }} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input aria-label="Seller ID" value={sellerLookupId} onChange={(event) => setSellerLookupId(event.target.value)} required placeholder="Seller ID" style={{ flex: "1 1 300px", minWidth: 0, padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+          <button type="submit" disabled={sellerLoading} className="primary-button" style={{ padding: "10px 16px", borderRadius: 9 }}>
+            {sellerLoading ? "Loading..." : "Load store"}
+          </button>
+        </form>
+      </section>
+
+      {sellerNotice && (
+        <div role="status" style={{ margin: "16px 0", padding: 14, borderRadius: 10, background: "#ecfdf3", color: "#166534" }}>
+          {sellerNotice}
+        </div>
+      )}
+      {sellerError && (
+        <div role="alert" style={{ margin: "16px 0", padding: 14, borderRadius: 10, background: "#fef2f2", color: "#b91c1c" }}>
+          {sellerError}
+        </div>
+      )}
+
+      {sellerProfile && (
+        <>
+          <section style={{ margin: "20px 0", padding: 24, border: "1px solid var(--border, #e7e8ef)", borderRadius: 18, background: "var(--surface, #fff)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div>
+                <span className="marketplace-eyebrow">YOUR STORE</span>
+                <h2 style={{ margin: "6px 0" }}>{sellerProfile.display_name}</h2>
+                <p style={{ margin: "4px 0", color: "var(--text-muted, #737789)" }}>{sellerProfile.email}</p>
+                <p style={{ margin: "8px 0", fontSize: 12, overflowWrap: "anywhere" }}>Seller ID: {sellerProfile.id}</p>
+              </div>
+              <span style={{ display: "inline-block", padding: "7px 12px", borderRadius: 999, fontWeight: 700, fontSize: 12, background: sellerProfile.status === "ACTIVE" ? "#dcfce7" : sellerProfile.status === "SUSPENDED" ? "#fee2e2" : "#fef3c7", color: sellerProfile.status === "ACTIVE" ? "#166534" : sellerProfile.status === "SUSPENDED" ? "#991b1b" : "#92400e" }}>
+                {sellerProfile.status}
+              </span>
+            </div>
+            {sellerProfile.status !== "ACTIVE" && (
+              <p style={{ marginBottom: 0, color: "var(--text-muted, #737789)" }}>
+                {sellerProfile.status === "PENDING" ? "Your store is awaiting administrator approval. You can view the dashboard while you wait." : "Your store is currently suspended. Contact the administrator for assistance."}
+              </p>
+            )}
+            {sellerProfile.status === "ACTIVE" && (
+              <p style={{ marginBottom: 0, color: "var(--text-muted, #737789)" }}>
+                Your store is approved. To add a product, open Marketplace and submit a listing using this seller ID. New listings remain drafts until an administrator publishes them.
+              </p>
+            )}
+          </section>
+
+          {/* SELLER_DASHBOARD_PRODUCT_FORM */}
+          {sellerProfile.status === "ACTIVE" && (
+            <section style={{ margin: "20px 0", padding: 24, border: "1px solid var(--border, #e7e8ef)", borderRadius: 18, background: "var(--surface, #fff)" }}>
+              <h2 style={{ marginTop: 0 }}>Add a product</h2>
+              <p style={{ color: "var(--text-muted, #737789)" }}>
+                Submit a product for review. It remains a draft until an administrator publishes it.
+              </p>
+
+              <form onSubmit={submitProductDraft} style={{ display: "grid", gap: 14 }}>
+                <label style={{ display: "grid", gap: 6 }}>
+                  Product name
+                  <input value={draftName} onChange={(event) => setDraftName(event.target.value)} required minLength={2} maxLength={160} placeholder="e.g. Wireless headphones" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+                </label>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  Description
+                  <textarea value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} maxLength={2000} rows={3} placeholder="Describe your product" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5", resize: "vertical" }} />
+                </label>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  Category
+                  <input value={draftCategory} onChange={(event) => setDraftCategory(event.target.value)} required maxLength={80} placeholder="e.g. Electronics" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+                </label>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+                  <label style={{ display: "grid", gap: 6 }}>
+                    Price (USD)
+                    <input type="number" value={draftPrice} onChange={(event) => setDraftPrice(event.target.value)} required min="0.01" max="1000000" step="0.01" placeholder="19.99" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+                  </label>
+                  <label style={{ display: "grid", gap: 6 }}>
+                    Inventory quantity
+                    <input type="number" value={draftStock} onChange={(event) => setDraftStock(event.target.value)} required min="0" max="100000" step="1" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+                  </label>
+                </div>
+
+                <label style={{ display: "grid", gap: 6 }}>
+                  Product image URL (optional)
+                  <input type="url" value={draftImageUrl} onChange={(event) => setDraftImageUrl(event.target.value)} maxLength={1000} placeholder="https://example.com/product.jpg" style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }} />
+                </label>
+
+                {draftNotice && (
+                  <p role={draftNoticeType === "error" ? "alert" : "status"} style={{ margin: 0, padding: 12, borderRadius: 9, background: draftNoticeType === "error" ? "#fef2f2" : "#f0fdf4", color: draftNoticeType === "error" ? "#b91c1c" : "#166534" }}>
+                    {draftNotice}
+                  </p>
+                )}
+
+                <button type="submit" disabled={draftSubmitting} style={{ padding: "12px 16px", borderRadius: 10, border: 0, cursor: draftSubmitting ? "wait" : "pointer", maxWidth: 260 }}>
+                  <Plus size={16} style={{ verticalAlign: "middle", marginRight: 8 }} />
+                  {draftSubmitting ? "Saving draft..." : "Submit product draft"}
+                </button>
+              </form>
+            </section>
+          )}
+          <section style={{ margin: "20px 0", padding: 24, border: "1px solid var(--border, #e7e8ef)", borderRadius: 18, background: "var(--surface, #fff)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0 }}>Your products</h2>
+                <p style={{ margin: "5px 0 0", color: "var(--text-muted, #737789)" }}>{sellerProducts.length} listing(s), including drafts and archived products.</p>
+              </div>
+              <button type="button" onClick={() => void loadSellerDashboard(sellerProfile.id)} disabled={sellerLoading} style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d9dce5", background: "transparent", cursor: "pointer" }}>
+                <RefreshCw size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />Refresh
+              </button>
+            </div>
+
+            {sellerProducts.length === 0 ? (
+              <p style={{ marginTop: 20, color: "var(--text-muted, #737789)" }}>No products found for this store yet.</p>
+            ) : (
+              <div style={{ display: "grid", gap: 12, marginTop: 18 }}>
+                {sellerProducts.map((product) => (
+                  <article key={product.id} style={{ display: "flex", gap: 14, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", padding: 16, border: "1px solid var(--border, #e7e8ef)", borderRadius: 12 }}>
+                    <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                      <strong>{product.name}</strong>
+                      <p style={{ margin: "5px 0", color: "var(--text-muted, #737789)" }}>{product.category} ? Stock: {product.inventory_quantity}</p>
+                      <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted, #737789)" }}>{product.description || "No description provided."}</p>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <strong>{formatMoney(product.price_minor / 100, product.currency)}</strong>
+                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: product.status === "ACTIVE" ? "#15803d" : product.status === "ARCHIVED" ? "#b91c1c" : "#92400e" }}>
+                        {product.status}
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      <p className="marketplace-product-note" style={{ marginTop: 20 }}>
+        Demo limitation: seller IDs are not authentication. Do not use this dashboard for real seller data or production operations until seller login and server-side ownership checks are implemented.
+      </p>
+    </section>
+  )}
+
+  {activeView === "admin" && (
+    <section className="marketplace-view" id="admin-review">
+      <div className="marketplace-hero">
+        <div>
+          <span className="marketplace-eyebrow">PAYPILOT COMMERCE</span>
+          <h1>Product review</h1>
+          <p>Review seller submissions before they appear in the public marketplace.</p>
+        </div>
+        <div className="marketplace-hero-icon"><ShieldCheck size={28} /></div>
+      </div>
+
+      <section
+        aria-labelledby="admin-access-title"
+        style={{
+          margin: "20px 0",
+          padding: 24,
+          border: "1px solid var(--border, #e7e8ef)",
+          borderRadius: 18,
+          background: "var(--surface, #fff)",
+        }}
+      >
+        <h2 id="admin-access-title" style={{ marginTop: 0 }}>Administrator access</h2>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void Promise.all([loadAdminDrafts(), loadAdminSellers()]);
+          }}
+          style={{ display: "grid", gap: 12 }}
+        >
+          <label style={{ display: "grid", gap: 6 }}>
+            Admin token
+            <input
+              type="password"
+              value={adminToken}
+              onChange={(event) => setAdminToken(event.target.value)}
+              autoComplete="off"
+              required
+              placeholder="Enter the token configured in backend/.env"
+              style={{
+                width: "100%",
+                padding: 11,
+                borderRadius: 9,
+                border: "1px solid #d9dce5",
+              }}
+            />
+          </label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            <button
+              type="submit"
+              className="marketplace-add-to-cart"
+              disabled={adminLoading || !adminToken.trim()}
+            >
+              <RefreshCw size={16} />
+              {adminLoading ? "Loading submissions..." : "Unlock & load drafts"}
+            </button>
+            <button
+              type="button"
+              className="marketplace-refresh"
+              onClick={() => {
+                setAdminToken("");
+                setAdminDrafts([]);
+                setAdminSellers([]);
+                setAdminError("");
+                setAdminNotice("");
+              }}
+            >
+              Lock & clear token
+            </button>
+          </div>
+        </form>
+        <p style={{ marginBottom: 0, fontSize: 12, color: "var(--text-muted, #737789)" }}>
+          Local hackathon demo only. The token is held in page memory and sent to the
+          backend in request headers. This is not a substitute for production admin
+          authentication, user sessions, or role-based access control.
+        </p>
+      </section>
+
+      {adminError && (
+        <div className="marketplace-error" role="alert">
+          <p>{adminError}</p>
+        </div>
+      )}
+
+      {adminNotice && (
+        <p role="status" style={{ color: "#067647" }}>{adminNotice}</p>
+      )}
+
+      {adminToken.trim() && (
+        <section
+          aria-labelledby="seller-applications-title"
+          style={{
+            margin: "20px 0",
+            padding: 24,
+            border: "1px solid var(--border, #e7e8ef)",
+            borderRadius: 18,
+            background: "var(--surface, #fff)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <h2 id="seller-applications-title" style={{ margin: 0 }}>Seller Applications</h2>
+              <p style={{ margin: "5px 0 0", color: "var(--text-muted, #737789)" }}>
+                {adminSellers.length} pending application(s). Approve a store before it can submit products.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="marketplace-refresh"
+              onClick={() => void loadAdminSellers()}
+              disabled={adminSellersLoading}
+            >
+              <RefreshCw size={16} /> {adminSellersLoading ? "Refreshing..." : "Refresh sellers"}
+            </button>
+          </div>
+
+          {adminSellersLoading ? (
+            <p style={{ marginTop: 18 }}>Loading seller applications...</p>
+          ) : adminSellers.length === 0 ? (
+            <div className="marketplace-empty" style={{ marginTop: 18 }}>
+              <div className="marketplace-empty-icon"><CheckCircle2 size={30} /></div>
+              <h3>No pending seller applications</h3>
+              <p>New registrations will appear here after you refresh.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 14, marginTop: 20 }}>
+              {adminSellers.map((seller) => (
+                <article
+                  key={seller.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 16,
+                    flexWrap: "wrap",
+                    padding: 18,
+                    border: "1px solid var(--border, #e7e8ef)",
+                    borderRadius: 12,
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: "1 1 240px" }}>
+                    <strong>{seller.display_name}</strong>
+                    <p style={{ margin: "5px 0", color: "var(--text-muted, #737789)" }}>{seller.email}</p>
+                    <p style={{ margin: "5px 0", fontSize: 12, overflowWrap: "anywhere" }}>ID: {seller.id}</p>
+                    {seller.created_at && (
+                      <p style={{ margin: "5px 0", fontSize: 12, color: "var(--text-muted, #737789)" }}>
+                        Registered: {new Date(seller.created_at).toLocaleString()}
+                      </p>
+                    )}
+                    <span style={{ display: "inline-block", marginTop: 5, padding: "5px 9px", borderRadius: 999, background: "#fef3c7", color: "#92400e", fontSize: 11, fontWeight: 700 }}>
+                      {seller.status}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="marketplace-primary-button"
+                    disabled={Boolean(adminBusySellerId)}
+                    onClick={() => void approveSellerApplication(seller)}
+                    style={{ padding: "10px 14px", borderRadius: 9 }}
+                  >
+                    <CheckCircle2 size={16} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                    {adminBusySellerId === seller.id ? "Approving..." : "Approve Seller"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {adminToken.trim() && (
+        <section
+          aria-labelledby="pending-drafts-title"
+          style={{
+            margin: "20px 0",
+            padding: 24,
+            border: "1px solid var(--border, #e7e8ef)",
+            borderRadius: 18,
+            background: "var(--surface, #fff)",
+          }}
+        >
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 12,
+          }}>
+            <div>
+              <h2 id="pending-drafts-title" style={{ margin: 0 }}>Pending submissions</h2>
+              <p style={{ margin: "5px 0 0", color: "var(--text-muted, #737789)" }}>
+                {adminDrafts.length} draft{adminDrafts.length === 1 ? "" : "s"} loaded
+              </p>
+            </div>
+            <button
+              type="button"
+              className="marketplace-refresh"
+              onClick={() => void loadAdminDrafts()}
+              disabled={adminLoading}
+            >
+              <RefreshCw size={16} /> Refresh drafts
+            </button>
+          </div>
+
+          {adminLoading ? (
+            <p>Loading product submissions...</p>
+          ) : adminDrafts.length === 0 ? (
+            <div className="marketplace-empty" style={{ marginTop: 18 }}>
+              <div className="marketplace-empty-icon"><CheckCircle2 size={30} /></div>
+              <h2>No pending drafts</h2>
+              <p>New product submissions will appear here when you refresh the list.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 16, marginTop: 20 }}>
+              {adminDrafts.map((product) => (
+                <article
+                  key={product.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr)",
+                    gap: 12,
+                    padding: 18,
+                    border: "1px solid #e7e8ef",
+                    borderRadius: 14,
+                  }}
+                >
+                  <div style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    flexWrap: "wrap",
+                  }}>
+                    <div>
+                      <span className="marketplace-category-tag">
+                        {product.category || "General"}
+                      </span>
+                      <h3 style={{ margin: "8px 0" }}>{product.name}</h3>
+                      <p style={{ margin: 0, color: "var(--text-muted, #737789)" }}>
+                        {product.description || "No description provided."}
+                      </p>
+                    </div>
+                    <strong>
+                      {formatMoney(product.price_minor / 100, product.currency)}
+                    </strong>
+                  </div>
+
+                  {product.image_url && (
+                    <p style={{ margin: 0 }}>
+                      <a href={product.image_url} target="_blank" rel="noreferrer">
+                        View product image
+                      </a>
+                    </p>
+                  )}
+
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                    gap: 10,
+                    fontSize: 13,
+                  }}>
+                    <div><strong>Seller</strong><br />{product.seller_name}</div>
+                    <div><strong>Seller email</strong><br />{product.seller_email}</div>
+                    <div><strong>Seller status</strong><br />{product.seller_status}</div>
+                    <div><strong>Stock</strong><br />{product.inventory_quantity}</div>
+                    <div><strong>Submission status</strong><br />{product.status}</div>
+                  </div>
+
+                  {product.seller_status !== "ACTIVE" && (
+                    <p role="alert" style={{ color: "#b54708", margin: 0 }}>
+                      This seller is not active. Activate the seller before publishing
+                      this product.
+                    </p>
+                  )}
+                  {product.inventory_quantity < 1 && (
+                    <p role="alert" style={{ color: "#b54708", margin: 0 }}>
+                      This product has no stock and cannot be published.
+                    </p>
+                  )}
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                    <button
+                      type="button"
+                      className="marketplace-add-to-cart"
+                      disabled={
+                        Boolean(adminBusyProductId) ||
+                        product.seller_status !== "ACTIVE" ||
+                        product.inventory_quantity < 1
+                      }
+                      onClick={() => void reviewProduct(product, "publish")}
+                    >
+                      <CheckCircle2 size={16} />
+                      {adminBusyProductId === product.id ? "Processing..." : "Approve & Publish"}
+                    </button>
+                    <button
+                      type="button"
+                      className="marketplace-refresh"
+                      disabled={Boolean(adminBusyProductId)}
+                      onClick={() => void reviewProduct(product, "reject")}
+                    >
+                      <Trash2 size={16} /> Reject & Archive
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </section>
+  )}
+
   {activeView === "marketplace" && (
     <section className="marketplace-view" id="marketplace">
       <div className="marketplace-hero">
@@ -473,6 +1731,238 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <p>Explore products from independent sellers and growing businesses.</p>
         </div>
         <div className="marketplace-hero-icon"><Store size={28} /></div>
+      </div>
+
+      <section
+        aria-labelledby="add-product-title"
+        style={{
+          margin: "20px 0",
+          padding: 24,
+          border: "1px solid var(--border, #e7e8ef)",
+          borderRadius: 18,
+          background: "var(--surface, #fff)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+          <div className="marketplace-hero-icon"><Plus size={24} /></div>
+          <div>
+            <h2 id="add-product-title" style={{ margin: 0 }}>Add a product</h2>
+            <p style={{ margin: "5px 0 0", color: "var(--text-muted, #737789)" }}>
+              Submit a listing for administrator review.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={submitProductDraft} style={{ display: "grid", gap: 14 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            Demo seller ID
+            <input
+              value={draftSellerId}
+              onChange={(event) => setDraftSellerId(event.target.value)}
+              required
+              aria-label="Demo seller ID"
+              style={{ width: "100%", padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+            />
+          </label>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+            <label style={{ display: "grid", gap: 6 }}>
+              Product name
+              <input
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                minLength={2}
+                maxLength={120}
+                required
+                placeholder="e.g. Wireless keyboard"
+                style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+              />
+            </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              Category
+              <input
+                value={draftCategory}
+                onChange={(event) => setDraftCategory(event.target.value)}
+                minLength={2}
+                maxLength={80}
+                required
+                placeholder="Electronics"
+                style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+              />
+            </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              Price (USD)
+              <input
+                type="number"
+                value={draftPrice}
+                onChange={(event) => setDraftPrice(event.target.value)}
+                min="0.01"
+                max="99999999"
+                step="0.01"
+                required
+                placeholder="29.99"
+                style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+              />
+            </label>
+            <label style={{ display: "grid", gap: 6 }}>
+              Stock quantity
+              <input
+                type="number"
+                value={draftStock}
+                onChange={(event) => setDraftStock(event.target.value)}
+                min="0"
+                max="100000"
+                step="1"
+                required
+                style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+              />
+            </label>
+          </div>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            Description
+            <textarea
+              value={draftDescription}
+              onChange={(event) => setDraftDescription(event.target.value)}
+              maxLength={3000}
+              rows={3}
+              placeholder="Describe the product and its features."
+              style={{ width: "100%", padding: 11, borderRadius: 9, border: "1px solid #d9dce5", resize: "vertical" }}
+            />
+          </label>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            Product image URL (optional)
+            <input
+              type="url"
+              value={draftImageUrl}
+              onChange={(event) => setDraftImageUrl(event.target.value)}
+              maxLength={1000}
+              placeholder="https://example.com/product.jpg"
+              style={{ padding: 11, borderRadius: 9, border: "1px solid #d9dce5" }}
+            />
+          </label>
+
+          {draftNotice && (
+            <p
+              role={draftNoticeType === "error" ? "alert" : "status"}
+              style={{
+                margin: 0,
+                color: draftNoticeType === "error" ? "#b42318" : "#067647",
+              }}
+            >
+              {draftNotice}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            className="marketplace-add-to-cart"
+            disabled={draftSubmitting}
+            style={{ justifyContent: "center", maxWidth: 260 }}
+          >
+            <Plus size={16} />
+            {draftSubmitting ? "Saving draft..." : "Submit product draft"}
+          </button>
+
+          <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted, #737789)" }}>
+            Local demo only. This form uses the existing demo seller. Seller authentication
+            is not implemented, and submitting a draft does not publish it.
+          </p>
+        </form>
+      </section>
+
+      <div className="marketplace-cart-summary" aria-live="polite">
+        <div className="marketplace-cart-heading">
+          <ShoppingCart size={20} />
+          <div>
+            <h2>Your cart <span>({cartCount})</span></h2>
+            <p>Review your selected marketplace items.</p>
+          </div>
+        </div>
+
+        {cartItems.length === 0 ? (
+          <p className="marketplace-cart-empty">Your cart is empty. Add a product to get started.</p>
+        ) : (
+          <>
+            <div className="marketplace-cart-items">
+              {cartItems.map((item) => (
+                <div className="marketplace-cart-item" key={item.product.id}>
+                  <div className="marketplace-cart-item-info">
+                    <strong>{item.product.name}</strong>
+                    <span>{formatMoney(item.product.price, item.product.currency)} each</span>
+                  </div>
+                  <div className="marketplace-cart-controls">
+                    <button
+                      type="button"
+                      aria-label={`Remove one ${item.product.name}`}
+                      onClick={() => changeCartQuantity(item.product.id, -1)}
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <span>{item.quantity}</span>
+                    <button
+                      type="button"
+                      aria-label={`Add one ${item.product.name}`}
+                      disabled={item.quantity >= item.product.inventory_quantity}
+                      onClick={() => changeCartQuantity(item.product.id, 1)}
+                    >
+                      <Plus size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="marketplace-cart-remove"
+                      aria-label={`Remove ${item.product.name} from cart`}
+                      onClick={() => removeFromCart(item.product.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <strong className="marketplace-cart-line-total">
+                    {formatMoney((item.product.price_minor * item.quantity) / 100, item.product.currency)}
+                  </strong>
+                </div>
+              ))}
+            </div>
+            <div className="marketplace-cart-total">
+              <span>Estimated total</span>
+              <strong>{formatMoney(cartTotalMinor / 100, cartItems[0]?.product.currency || "USD")}</strong>
+            </div>
+            {marketplaceNotice && (
+              <p
+                className="marketplace-cart-note"
+                role="status"
+                aria-live="polite"
+                style={{
+                  color:
+                    marketplaceNoticeType === "error"
+                      ? "#b42318"
+                      : marketplaceNoticeType === "success"
+                        ? "#067647"
+                        : "inherit",
+                }}
+              >
+                {marketplaceNotice}
+              </p>
+            )}
+            <button
+              type="button"
+              className="marketplace-checkout-button"
+              onClick={handleMarketplaceCheckout}
+              disabled={cartItems.length === 0 || marketplaceCheckoutBusy}
+            >
+              {marketplaceCheckoutBusy
+                ? "Processing checkout..."
+                : `Checkout with PayPal - ${formatMoney(
+                    cartTotalMinor / 100,
+                    cartItems[0]?.product.currency || "USD"
+                  )}`}
+            </button>
+            <p className="marketplace-cart-note">
+              Pay securely through PayPal Sandbox. Your cart remains available if checkout is cancelled.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="marketplace-toolbar">
@@ -577,6 +2067,20 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
                     <strong>{formatMoney(product.price, product.currency)}</strong>
                     <span>{product.inventory_quantity} available</span>
                   </div>
+                  <button
+                    type="button"
+                    className="marketplace-add-to-cart"
+                    disabled={
+                      product.inventory_quantity < 1 ||
+                      (cartItems.find((item) => item.product.id === product.id)?.quantity ?? 0) >= product.inventory_quantity
+                    }
+                    onClick={() => addToCart(product)}
+                  >
+                    <ShoppingCart size={15} />
+                    {(cartItems.find((item) => item.product.id === product.id)?.quantity ?? 0) >= product.inventory_quantity
+                      ? "Stock limit reached"
+                      : "Add to cart"}
+                  </button>
                 </div>
               </article>
             ))}
@@ -634,13 +2138,13 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
         <p className="marketplace-chat-disclaimer">
           <ShieldCheck size={14} />
-          Advice only. Product purchases and marketplace checkout are not enabled yet.
+          Recommendations are based on current marketplace listings. Checkout is handled through PayPal Sandbox.
           The assistant cannot create or capture payments.
         </p>
       </section>
 
       <p className="marketplace-product-note">
-        Product ordering, marketplace checkout and multi-seller payouts are not enabled yet.
+        Marketplace checkout is in testing. Payments use PayPal Sandbox; multi-seller payouts are not yet implemented.
       </p>
     </section>
   )}
@@ -705,7 +2209,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <section className="welcome-row">
             <div>
               <div className="eyebrow"><Sparkles size={14} /> YOUR FINANCIAL COPILOT</div>
-              <h1>Good morning<span className="wave"> ✨</span></h1>
+              <h1>Good morning<span className="wave"> âœ¨</span></h1>
               <p className="page-subtitle">Your money moves. Let's make every move count.</p>
             </div>
             <button className="primary-button" onClick={() => { setPaymentNotice(""); setPaymentOpen(true); }}><Plus size={18} /> New payment</button>
@@ -730,7 +2234,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
             </article>
             <article className="stat-card">
               <div className="stat-top"><span>Pending payments</span><div className="stat-icon amber"><Clock3 size={19} /></div></div>
-              <div className="stat-value">{dashboard ? String(dashboard.pending_payments).padStart(2, "0") : "—"}</div>
+              <div className="stat-value">{dashboard ? String(dashboard.pending_payments).padStart(2, "0") : "â€”"}</div>
               <div className="stat-foot"><span className="pending-text">Awaiting capture</span><span className="stat-note">Recorded orders</span></div>
             </article>
           </section>
@@ -814,7 +2318,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
             </div>
           </section>
 
-          <footer className="page-footer"><span>© 2026 PayPilot AI</span><span><ShieldCheck size={13} /> Built with security in mind</span><span><Zap size={13} /> Powered by intelligent workflows</span></footer>
+          <footer className="page-footer"><span>Â© 2026 PayPilot AI</span><span><ShieldCheck size={13} /> Built with security in mind</span><span><Zap size={13} /> Powered by intelligent workflows</span></footer>
         </div>
         </div>
       </main>
