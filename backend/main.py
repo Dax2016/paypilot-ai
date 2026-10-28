@@ -211,12 +211,25 @@ app = FastAPI(
     version="0.1.0",
 )
 
+PAYPILOT_FRONTEND_URL = os.getenv(
+    "PAYPILOT_FRONTEND_URL",
+    "http://localhost:5173",
+).rstrip("/")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "PAYPILOT_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Admin-Token"],
 )
 
 
@@ -851,8 +864,14 @@ def assistant(request: AssistantRequest):
     normalized = message.casefold()
 
     # Look for a PayPal order ID in the user's question.
-    order_match = re.search(r"\b[A-Z0-9]{12,20}\b", message.upper())
-    order_id = order_match.group(0) if order_match else None
+    order_match = re.fullmatch(r"\s*([A-Z0-9]{12,20})\s*", message.upper())
+    if not order_match:
+        order_match = re.search(
+            r"\b(?:paypal\s+)?order(?:\s+(?:id|number))?\s*[:#-]?\s*([A-Z0-9]{12,20})\b",
+            message,
+            re.IGNORECASE,
+        )
+    order_id = order_match.group(1) if order_match else None
 
     with database_connection() as connection:
         if order_id:
@@ -1163,7 +1182,7 @@ def prepare_payment(request: PaymentIntentRequest):
 
 # PayPal Sandbox order lifecycle.
 # These endpoints never expose the client secret to the frontend.
-from uuid import uuid4
+from uuid import UUID, uuid4
 import re
 
 
@@ -1243,8 +1262,8 @@ async def create_paypal_order(request: PayPalOrderRequest):
         "application_context": {
             "brand_name": "PayPilot AI",
             "user_action": "PAY_NOW",
-            "return_url": "http://localhost:5173/?paypal=return",
-            "cancel_url": "http://localhost:5173/?paypal=cancel",
+            "return_url": f"{PAYPILOT_FRONTEND_URL}/?paypal=return",
+            "cancel_url": f"{PAYPILOT_FRONTEND_URL}/?paypal=cancel",
         },
     }
 
@@ -1494,11 +1513,18 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
             },
             "items": paypal_items,
         }],
-        "application_context": {
-            "brand_name": "PayPilot AI",
-            "user_action": "PAY_NOW",
-            "return_url": "http://localhost:5173/?marketplace_paypal=return",
-            "cancel_url": "http://localhost:5173/?marketplace_paypal=cancel",
+        "payment_source": {
+            "paypal": {
+                "experience_context": {
+                    "brand_name": "PayPilot AI",
+                    "user_action": "PAY_NOW",
+                    "return_url": f"{PAYPILOT_FRONTEND_URL}/?marketplace_paypal=return",
+                    "cancel_url": (
+                        f"{PAYPILOT_FRONTEND_URL}/?marketplace_paypal=cancel"
+                        f"&local_order_id={local_order_id}"
+                    ),
+                },
+            },
         },
     }
 
@@ -1519,13 +1545,65 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
             detail="Could not reach PayPal Sandbox to create the marketplace order.",
         )
 
-    if response.status_code != 201:
+    if response.status_code not in (200, 201):
+        try:
+            paypal_error = response.json()
+        except ValueError:
+            paypal_error = {"message": response.text[:1000]}
+
+        print(
+            "PayPal marketplace order creation failed:",
+            {
+                "status_code": response.status_code,
+                "error": paypal_error,
+            },
+        )
         raise HTTPException(
             status_code=502,
-            detail="PayPal Sandbox could not create the marketplace order.",
+            detail={
+                "message": "PayPal Sandbox rejected marketplace order creation.",
+                "paypal_status": response.status_code,
+                "paypal_error": paypal_error,
+            },
         )
 
     paypal_data = response.json()
+    if not paypal_data.get("id"):
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal returned an order without an order ID.",
+        )
+
+    payer_action_url = next(
+        (
+            link.get("href")
+            for link in paypal_data.get("links", [])
+            if link.get("rel") == "payer-action"
+            and isinstance(link.get("href"), str)
+            and link["href"].startswith("https://")
+        ),
+        None,
+    )
+
+    if not payer_action_url:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal did not return a valid checkout URL.",
+        )
+    experience_context = (
+        payload.get("payment_source", {})
+        .get("paypal", {})
+        .get("experience_context", {})
+    )
+    print(
+        "Marketplace PayPal redirect diagnostic:",
+        {
+            "order_id": paypal_data.get("id"),
+            "sent_return_url": experience_context.get("return_url"),
+            "sent_cancel_url": experience_context.get("cancel_url"),
+            "paypal_response_status": paypal_data.get("status"),
+        },
+    )
     paypal_order_id = paypal_data.get("id")
     approval_url = next(
         (
@@ -1579,6 +1657,136 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
     }
 
 
+
+@app.post("/api/marketplace/orders/{local_order_id}/cancel")
+async def cancel_marketplace_order(local_order_id: str):
+    """Mark an uncaptured marketplace order cancelled after checking PayPal."""
+    try:
+        local_order_id = str(UUID(local_order_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid marketplace order ID.",
+        )
+
+    with database_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM marketplace_orders WHERE id = ?",
+            (local_order_id,),
+        ).fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Marketplace order not found.",
+            )
+
+        order = dict(row)
+
+    if order["status"] == "COMPLETED" or order["inventory_applied"]:
+        return {
+            "status": order["status"],
+            "cancelled": False,
+            "message": "This order is already completed and cannot be cancelled here.",
+        }
+
+    if order["status"] == "CANCELLED":
+        return {
+            "status": "CANCELLED",
+            "cancelled": True,
+            "message": "This order is already cancelled.",
+        }
+
+    token = await _paypal_access_token()
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                f"{PAYPAL_API_BASE}/v2/checkout/orders/"
+                f"{order['paypal_order_id']}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not verify the order with PayPal. Its status was not changed.",
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal could not verify the order. Its status was not changed.",
+        )
+
+    paypal_order = response.json()
+
+    if paypal_order.get("id") != order["paypal_order_id"]:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal returned a different order. Its status was not changed.",
+        )
+
+    paypal_status = paypal_order.get("status")
+    captures = [
+        capture
+        for unit in paypal_order.get("purchase_units", [])
+        for capture in unit.get("payments", {}).get("captures", [])
+    ]
+
+    if (
+        paypal_status not in ("CREATED", "VOIDED")
+        or any(capture.get("status") == "COMPLETED" for capture in captures)
+    ):
+        return {
+            "status": order["status"],
+            "cancelled": False,
+            "paypal_status": paypal_status,
+            "message": (
+                "PayPal has not confirmed a safely cancellable order. "
+                "The local order remains unchanged."
+            ),
+        }
+
+    now = utc_now()
+
+    with database_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        current_row = connection.execute(
+            "SELECT * FROM marketplace_orders WHERE id = ?",
+            (local_order_id,),
+        ).fetchone()
+
+        if current_row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Marketplace order not found.",
+            )
+
+        current = dict(current_row)
+
+        if current["status"] != "PENDING" or current["inventory_applied"]:
+            return {
+                "status": current["status"],
+                "cancelled": False,
+                "message": "The order changed while cancellation was being checked.",
+            }
+
+        connection.execute(
+            """
+            UPDATE marketplace_orders
+            SET status = 'CANCELLED', updated_at = ?
+            WHERE id = ? AND status = 'PENDING' AND inventory_applied = 0
+            """,
+            (now, local_order_id),
+        )
+
+    return {
+        "status": "CANCELLED",
+        "cancelled": True,
+        "message": "The uncaptured marketplace order was cancelled locally.",
+    }
+
 @app.post("/api/marketplace/orders/{order_id}/capture")
 async def capture_marketplace_order(order_id: str):
     """Capture an order and safely reconcile inventory conflicts."""
@@ -1597,6 +1805,11 @@ async def capture_marketplace_order(order_id: str):
             )
 
         order = dict(order_row)
+        if order["status"] == "CANCELLED":
+            raise HTTPException(
+                status_code=409,
+                detail="This marketplace order was cancelled and cannot be captured.",
+            )
         items = [
             dict(row) for row in connection.execute(
                 "SELECT * FROM marketplace_order_items WHERE order_id = ?",
@@ -1815,12 +2028,16 @@ async def capture_marketplace_order(order_id: str):
     }
 
 @app.get("/api/marketplace/orders")
-def list_marketplace_orders(limit: int = 50):
+def list_marketplace_orders(
+    limit: int = 50,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
     """List recent marketplace orders for the internal/demo workspace.
 
     This is not a private customer order-history endpoint. Buyer ownership
     and account authorization must be implemented before public deployment.
     """
+    require_admin_token(x_admin_token)
     limit = max(1, min(limit, 100))
 
     with database_connection() as connection:
