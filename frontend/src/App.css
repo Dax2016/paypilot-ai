@@ -444,3 +444,607 @@
     gap: 5px;
   }
 }
+
+
+
+/* PayPilot AI — mobile-first usability improvements */
+@media (max-width: 760px) {
+  .app-shell {
+    min-width: 320px;
+  }
+
+  /* Keep the main content full-width on mobile */
+  .sidebar {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    position: sticky;
+    inset: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    overflow-x: auto;
+    border-bottom: 1px solid #ffffff18;
+  }
+
+  .brand {
+    flex-shrink: 0;
+  }
+
+  .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+
+  .brand > span,
+  .brand small {
+    display: block;
+  }
+
+  .brand small {
+    font-size: 8px;
+  }
+
+  .workspace-label,
+  .sidebar-spacer,
+  .upgrade-card,
+  .profile-row,
+  .tools-label {
+    display: none;
+  }
+
+  .sidebar .nav-menu {
+    display: flex;
+    flex: 0 0 auto;
+    width: auto;
+    gap: 6px;
+    margin: 0;
+  }
+
+  .sidebar .nav-item,
+  .sidebar .nav-item:not(.active),
+  .sidebar .nav-item.active {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-height: 42px;
+    padding: 0 11px;
+    gap: 7px;
+    font-size: 12px;
+    white-space: nowrap;
+    box-shadow: none;
+    border: 1px solid #ffffff15;
+  }
+
+  .sidebar .nav-item > span,
+  .sidebar .nav-item > svg + span {
+    display: inline;
+  }
+
+  .main-area {
+    margin-left: 0;
+    min-width: 0;
+  }
+
+  .topbar {
+    height: 54px;
+    padding: 0 14px;
+  }
+
+  .page-content {
+    padding: 20px 14px 24px;
+  }
+
+  .welcome-row h1 {
+    font-size: 25px;
+    line-height: 1.25;
+  }
+
+  .page-subtitle {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    padding: 14px;
+  }
+
+  .stat-top {
+    font-size: 12px;
+  }
+
+  .stat-value {
+    font-size: 22px;
+    overflow-wrap: anywhere;
+  }
+
+  .stat-foot {
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .panel,
+  .marketplace-assistant {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .panel-heading h2,
+  .marketplace-assistant-heading h2 {
+    font-size: 17px;
+  }
+
+  .panel-heading p,
+  .marketplace-assistant-heading p {
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .marketplace-chat {
+    max-height: min(48vh, 440px);
+    min-height: 180px;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .marketplace-chat-bubble {
+    max-width: calc(100% - 8px);
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+  }
+
+  .marketplace-chat-form {
+    gap: 8px;
+    padding: 6px 7px 6px 12px;
+  }
+
+  .marketplace-chat-form input {
+    font-size: 16px;
+    min-height: 42px;
+  }
+
+  .marketplace-chat-form button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  .marketplace-chat-form button span {
+    display: inline;
+  }
+
+  .marketplace-chat-disclaimer {
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .marketplace-add-to-cart {
+    min-height: 46px;
+    font-size: 14px;
+  }
+
+  .marketplace-product-bottom {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .marketplace-product-bottom strong {
+    font-size: 20px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .marketplace-product-bottom span {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .marketplace-cart-controls button {
+    width: 38px;
+    height: 38px;
+  }
+
+  .primary-button,
+  .text-button {
+    min-height: 44px;
+    font-size: 13px;
+  }
+
+  .page-footer {
+    font-size: 11px;
+    line-height: 1.6;
+  }
+}
+
+@media (max-width: 390px) {
+  .sidebar {
+    gap: 10px;
+    padding: 9px 10px;
+  }
+
+  .brand {
+    gap: 8px;
+  }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+  }
+
+  .brand small {
+    display: none;
+  }
+
+  .sidebar .nav-item,
+  .sidebar .nav-item:not(.active),
+  .sidebar .nav-item.active {
+    padding: 0 9px;
+    font-size: 11px;
+  }
+
+  .page-content {
+    padding: 16px 10px 22px;
+  }
+
+  .panel,
+  .marketplace-assistant {
+    padding: 13px;
+  }
+
+  .stat-card {
+    padding: 11px;
+  }
+
+  .stat-value {
+    font-size: 19px;
+  }
+}
+
+/* PayPilot AI — improve long marketplace responses on mobile */
+@media (max-width: 760px) {
+  .marketplace-chat {
+    max-height: 65vh;
+    min-height: 240px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+
+  .marketplace-chat-row {
+    min-width: 0;
+  }
+
+  .marketplace-chat-bubble {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .marketplace-chat-row.assistant .marketplace-chat-bubble {
+    flex: 1;
+  }
+}
+
+/* PayPilot AI — unified, scrollable mobile navigation */
+@media (max-width: 760px) {
+  .app-shell {
+    min-width: 320px;
+  }
+
+  .sidebar {
+    box-sizing: border-box;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    position: sticky;
+    top: 0;
+    left: auto;
+    right: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: none;
+    border-bottom: 1px solid #ffffff18;
+  }
+
+  .sidebar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .brand {
+    flex: 0 0 auto;
+    padding: 0;
+  }
+
+  .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+
+  .brand > span {
+    display: block;
+    font-size: 17px;
+  }
+
+  .brand small {
+    display: none;
+  }
+
+  .workspace-label,
+  .sidebar-spacer,
+  .upgrade-card,
+  .profile-row {
+    display: none !important;
+  }
+
+  .sidebar .nav-menu {
+    display: flex;
+    flex: 0 0 auto;
+    width: auto;
+    gap: 6px;
+    margin: 0;
+  }
+
+  .sidebar .nav-item,
+  .sidebar .nav-item:not(.active),
+  .sidebar .nav-item.active {
+    display: inline-flex;
+    flex: 0 0 auto;
+    justify-content: center;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 11px;
+    font-size: 12px;
+    white-space: nowrap;
+    box-shadow: none;
+    border: 1px solid #ffffff20;
+    border-radius: 8px;
+  }
+
+  .sidebar .nav-item > span,
+  .sidebar .nav-item > svg + span {
+    display: inline;
+    font-size: inherit;
+  }
+
+  .sidebar .nav-item.active {
+    background: #7061e733;
+    color: #d0c8ff;
+    border-color: #9180ff66;
+  }
+
+  .main-area {
+    min-width: 0;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .topbar {
+    min-width: 0;
+    padding: 0 12px;
+  }
+
+  .page-content {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 390px) {
+  .sidebar {
+    gap: 10px;
+    padding: 9px 10px;
+  }
+
+  .brand > span {
+    font-size: 15px;
+  }
+
+  .sidebar .nav-item,
+  .sidebar .nav-item:not(.active),
+  .sidebar .nav-item.active {
+    padding: 0 9px;
+    font-size: 11px;
+  }
+}
+
+
+/* Customer authentication */
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 15% 10%, #e9e4ff 0, transparent 38%),
+    radial-gradient(ellipse at 90% 85%, #e6efff 0, transparent 36%),
+    #f7f8fc;
+  color: #20223b;
+}
+.auth-card {
+  width: min(100%, 440px);
+  padding: clamp(24px, 5vw, 42px);
+  border: 1px solid #eceef5;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 24px 80px #25254a12;
+}
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #242640;
+  text-decoration: none;
+  font-size: 23px;
+  font-weight: 800;
+  letter-spacing: -.8px;
+}
+.auth-eyebrow {
+  margin: 24px 0 9px;
+  color: #7967d9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+}
+.auth-card h1 {
+  margin: 0;
+  font-size: clamp(25px, 5vw, 31px);
+  letter-spacing: -1px;
+}
+.auth-description {
+  margin: 10px 0 25px;
+  color: #8587a0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.auth-form { display: grid; gap: 9px; }
+.auth-form label {
+  margin-top: 7px;
+  color: #343650;
+  font-size: 12px;
+  font-weight: 700;
+}
+.auth-form input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 13px;
+  border: 1px solid #e3e5ef;
+  border-radius: 9px;
+  outline: none;
+  background: #fff;
+  color: #282943;
+  font: inherit;
+  font-size: 13px;
+}
+.auth-form input:focus {
+  border-color: #9484ef;
+  box-shadow: 0 0 0 3px #8372eb18;
+}
+.auth-submit { width: 100%; min-height: 45px; margin-top: 13px; font-size: 13px; }
+.auth-submit:disabled { opacity: .65; cursor: wait; }
+.auth-error {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #f4c7c7;
+  border-radius: 8px;
+  background: #fff4f4;
+  color: #a42323;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.auth-switch {
+  margin: 22px 0 0;
+  text-align: center;
+  color: #8587a0;
+  font-size: 12px;
+}
+.auth-switch button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6f5cd1;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+.auth-footnote {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 22px 0 0;
+  color: #989aaf;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.auth-footnote svg { flex-shrink: 0; color: #53a98a; }
+.auth-logout {
+  padding: 6px 8px;
+  border: 1px solid #ffffff20;
+  border-radius: 7px;
+  background: transparent;
+  color: #c9c8e0;
+  font-size: 10px;
+  cursor: pointer;
+}
+.auth-logout:hover { background: #ffffff10; color: white; }
+
+
+/* Structured AI response details */
+.marketplace-chat-content,
+.message-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.semantic-details {
+  margin-top: 9px;
+  padding: 12px 14px;
+  border: 1px solid rgba(120, 96, 190, 0.2);
+  border-radius: 12px;
+  background: rgba(120, 96, 190, 0.055);
+  color: inherit;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.semantic-section + .semantic-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(120, 96, 190, 0.16);
+}
+
+.semantic-section h4 {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.semantic-section ul {
+  margin: 0;
+  padding-left: 19px;
+}
+
+.semantic-section li + li { margin-top: 4px; }
+
+.semantic-evidence {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.semantic-evidence > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.semantic-evidence dt { color: var(--muted, #777); }
+
+.semantic-evidence dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.semantic-next-action {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(120, 96, 190, 0.16);
+}

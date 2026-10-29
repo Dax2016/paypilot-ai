@@ -6,7 +6,6 @@
   Bot,
   BrainCircuit,
   CheckCircle2,
-  ChevronDown,
   CircleHelp,
   Clock3,
   CreditCard,
@@ -27,7 +26,21 @@
   Zap,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { apiUrl } from "./api";
 import "./App.css";
+
+type CustomerAccount = {
+  id: string;
+  email: string;
+  created_at?: string;
+};
+
+type AuthResponse = {
+  access_token: string;
+  token_type: string;
+  expires_at: string;
+  account: CustomerAccount;
+};
 
 type TransactionRecord = {
   paypal_order_id: string;
@@ -87,7 +100,97 @@ type MarketplaceResponse = {
   total?: number;
 };
 
-type ShoppingChatMessage = { role: "assistant" | "user"; text: string };
+type SemanticResponse = {
+  intent?: string;
+  answer?: string;
+  key_points?: string[];
+  evidence?: Array<Record<string, unknown>>;
+  recommendations?: string[];
+  next_action?: string | null;
+};
+
+type ChatMessage = {
+  role: "assistant" | "user";
+  text: string;
+  semantic?: SemanticResponse;
+};
+
+type ShoppingChatMessage = ChatMessage;
+
+function SemanticDetails({ semantic }: { semantic?: SemanticResponse }) {
+  if (!semantic) return null;
+
+  const displayValue = (value: unknown): string => {
+    if (Array.isArray(value)) return `${value.length} items`;
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") return "Details available";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    return String(value);
+  };
+
+  const labelFor = (value: string) =>
+    value.replace(/_/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
+
+  const rows = (semantic.evidence ?? []).flatMap((record, index) =>
+    Object.entries(record)
+      .filter(([key]) => key.toLowerCase() !== "product_ids")
+      .filter(([, value]) =>
+        value === null ||
+        ["string", "number", "boolean"].includes(typeof value) ||
+        Array.isArray(value)
+      )
+      .map(([key, value]) => ({
+        id: `${index}-${key}`,
+        label: labelFor(key),
+        value: displayValue(value),
+      }))
+  );
+
+  if (
+    !semantic.key_points?.length &&
+    !rows.length &&
+    !semantic.recommendations?.length &&
+    !semantic.next_action
+  ) return null;
+
+  return (
+    <div className="semantic-details">
+      {!!semantic.key_points?.length && (
+        <section className="semantic-section">
+          <h4>Key points</h4>
+          <ul>{semantic.key_points.map((point, i) =>
+            <li key={`${i}-${point}`}>{point}</li>
+          )}</ul>
+        </section>
+      )}
+      {!!rows.length && (
+        <section className="semantic-section">
+          <h4>Supporting evidence</h4>
+          <dl className="semantic-evidence">
+            {rows.map(row => (
+              <div key={row.id}>
+                <dt>{row.label}</dt><dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
+      {!!semantic.recommendations?.length && (
+        <section className="semantic-section">
+          <h4>Recommendations</h4>
+          <ul>{semantic.recommendations.map((item, i) =>
+            <li key={`${i}-${item}`}>{item}</li>
+          )}</ul>
+        </section>
+      )}
+      {semantic.next_action && (
+        <p className="semantic-next-action">
+          <strong>Suggested next step:</strong> {semantic.next_action}
+        </p>
+      )}
+    </div>
+  );
+}
 
 type CartItem = {
   product: MarketplaceProduct;
@@ -184,6 +287,14 @@ type MarketplaceOrdersResponse = {
 };
 
 function App() {
+  // Customer tokens live in React memory only; refreshing the page signs out.
+  const [authToken, setAuthToken] = useState("");
+  const [authAccount, setAuthAccount] = useState<CustomerAccount | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [message, setMessage] = useState("");
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("10.00");
@@ -283,7 +394,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setMarketplaceNoticeType("info");
 
     try {
-      const response = await fetch("http://127.0.0.1:8001/api/marketplace/orders", {
+      const response = await fetch(apiUrl("/api/marketplace/orders"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -362,7 +473,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8001/api/sellers/${encodeURIComponent(draftSellerId.trim())}/products`,
+        apiUrl(`/api/sellers/${encodeURIComponent(draftSellerId.trim())}/products`),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -418,7 +529,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setAdminError("");
 
     try {
-      const response = await fetch("/api/admin/sellers?status=PENDING&limit=100", {
+      const response = await fetch(apiUrl("/api/admin/sellers?status=PENDING&limit=100"), {
         headers: { "X-Admin-Token": adminToken.trim() },
       });
       const data = await response.json().catch(() => ({}));
@@ -454,8 +565,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setAdminNotice("");
 
     try {
-      const response = await fetch(
-        `/api/admin/sellers/${encodeURIComponent(seller.id)}/approve`,
+      const response = await fetch(apiUrl(`/api/admin/sellers/${encodeURIComponent(seller.id)}/approve`),
         {
           method: "POST",
           headers: { "X-Admin-Token": adminToken.trim() },
@@ -490,7 +600,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setAdminNotice("");
 
     try {
-      const response = await fetch("/api/admin/products?status=DRAFT&limit=100", {
+      const response = await fetch(apiUrl("/api/admin/products?status=DRAFT&limit=100"), {
         headers: { "X-Admin-Token": adminToken.trim() },
       });
       const data = await response.json();
@@ -529,8 +639,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setAdminNotice("");
 
     try {
-      const response = await fetch(
-        `/api/admin/products/${encodeURIComponent(product.id)}/${action}`,
+      const response = await fetch(apiUrl(`/api/admin/products/${encodeURIComponent(product.id)}/${action}`),
         {
           method: "POST",
           headers: { "X-Admin-Token": adminToken.trim() },
@@ -563,7 +672,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     }
   }
 
-  const [conversation, setConversation] = useState([
+  const [conversation, setConversation] = useState<ChatMessage[]>([
     {
       role: "assistant",
       text: "Hi there! I'm your PayPilot AI assistant. I can help you prepare payments, understand transactions, and keep your money moving smoothly.",
@@ -581,7 +690,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
       setProductsError("");
 
       try {
-        const response = await fetch("/api/products?limit=100");
+        const response = await fetch(apiUrl("/api/products?limit=100"));
         if (!response.ok) {
           throw new Error("Could not load the product catalogue.");
         }
@@ -612,6 +721,12 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   useEffect(() => {
     if (activeView !== "orders") return;
 
+    if (!adminToken.trim()) {
+      setOrders([]);
+      setOrdersError("Enter your admin token in Admin Review to access order history.");
+      return;
+    }
+
     let cancelled = false;
 
     async function loadOrders() {
@@ -619,7 +734,9 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
       setOrdersError("");
 
       try {
-        const response = await fetch("/api/marketplace/orders?limit=50");
+        const response = await fetch(apiUrl("/api/marketplace/orders?limit=50"), {
+          headers: { "X-Admin-Token": adminToken.trim() },
+        });
         if (!response.ok) {
           throw new Error("Could not load marketplace orders.");
         }
@@ -645,14 +762,14 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     return () => {
       cancelled = true;
     };
-  }, [activeView, ordersReload]);
+  }, [activeView, ordersReload, adminToken]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadDashboard() {
       try {
-        const response = await fetch("http://127.0.0.1:8001/api/dashboard");
+        const response = await fetch(apiUrl("/api/dashboard"));
         if (!response.ok) throw new Error("Dashboard request failed.");
         const data: DashboardData = await response.json();
         if (!cancelled) {
@@ -685,9 +802,61 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     window.history.replaceState({}, document.title, window.location.pathname);
 
     if (marketplaceState === "cancel") {
-      setMarketplaceNotice("PayPal checkout was cancelled. Your cart is unchanged.");
-      setMarketplaceNoticeType("error");
-      return;
+      const localOrderId = params.get("local_order_id");
+
+      if (!localOrderId) {
+        setMarketplaceNotice(
+          "Checkout was closed. Your cart is unchanged."
+        );
+        setMarketplaceNoticeType("error");
+        return;
+      }
+
+      let cancellationEffectCancelled = false;
+
+      async function recordMarketplaceCancellation() {
+        try {
+          const response = await fetch(
+            apiUrl(
+              `/api/marketplace/orders/${encodeURIComponent(localOrderId as string)}/cancel`
+            ),
+            { method: "POST" }
+          );
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(
+              typeof data.detail === "string"
+                ? data.detail
+                : "Could not verify the marketplace order."
+            );
+          }
+
+          if (cancellationEffectCancelled) return;
+
+          setMarketplaceNotice(
+            data.message ||
+              "Checkout was closed. The order may still be pending."
+          );
+          setMarketplaceNoticeType(data.cancelled ? "error" : "info");
+        } catch (error) {
+          if (cancellationEffectCancelled) return;
+
+          setMarketplaceNotice(
+            error instanceof Error
+              ? error.message
+              : "Could not verify the marketplace order. Your cart is unchanged."
+          );
+          setMarketplaceNoticeType("error");
+        }
+      }
+
+      void recordMarketplaceCancellation();
+
+      return () => {
+        cancellationEffectCancelled = true;
+      };
     }
 
     if (!orderId) {
@@ -705,7 +874,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
       try {
         const response = await fetch(
-          `http://127.0.0.1:8001/api/marketplace/orders/${encodeURIComponent(orderId!)}/capture`,
+          apiUrl(`/api/marketplace/orders/${encodeURIComponent(orderId!)}/capture`),
           { method: "POST" }
         );
         const data = await response.json();
@@ -775,7 +944,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
       try {
         const captureResponse = await fetch(
-          `http://127.0.0.1:8001/api/paypal/orders/${encodeURIComponent(orderId!)}/capture`,
+          apiUrl(`/api/paypal/orders/${encodeURIComponent(orderId!)}/capture`),
           { method: "POST" }
         );
         const captureData = await captureResponse.json();
@@ -784,7 +953,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           throw new Error(captureData.detail || "Could not confirm the PayPal payment.");
         }
 
-        const dashboardResponse = await fetch("http://127.0.0.1:8001/api/dashboard");
+        const dashboardResponse = await fetch(apiUrl("/api/dashboard"));
         if (!dashboardResponse.ok) {
           throw new Error("Payment was checked, but the dashboard could not refresh.");
         }
@@ -843,7 +1012,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setPaymentNotice("");
 
     try {
-      const response = await fetch("http://127.0.0.1:8001/api/paypal/orders", {
+      const response = await fetch(apiUrl("/api/paypal/orders"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -876,9 +1045,12 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setShoppingSending(true);
 
     try {
-      const response = await fetch("/api/shopping-assistant", {
+      const response = await fetch(apiUrl("/api/shopping-assistant"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ message: text }),
       });
 
@@ -898,6 +1070,10 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           text: typeof data.reply === "string"
             ? data.reply
             : "I couldn't prepare a response. Please try again.",
+          semantic:
+            data.semantic_response && typeof data.semantic_response === "object"
+              ? data.semantic_response as SemanticResponse
+              : undefined,
         },
       ]);
     } catch (error) {
@@ -924,25 +1100,36 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setSending(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:8001/api/assistant", {
+      const response = await fetch(apiUrl("/api/assistant"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ message: text }),
       });
 
-      if (!response.ok) throw new Error("Assistant request failed.");
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(
+          `Assistant request failed (${response.status}): ${details.slice(0, 300)}`
+        );
+      }
 
-      const data: { reply: string } = await response.json();
+      const data: { reply: string; semantic_response?: SemanticResponse } = await response.json();
       setConversation((items) => [
         ...items,
-        { role: "assistant", text: data.reply },
+        { role: "assistant", text: data.reply, semantic: data.semantic_response },
       ]);
-    } catch {
+    } catch (error) {
+      const details =
+        error instanceof Error ? error.message : String(error);
+
       setConversation((items) => [
         ...items,
         {
           role: "assistant",
-          text: "I couldn't reach the backend. Please check that the API is running on http://127.0.0.1:8001 and try again. No payment was made.",
+          text: `Assistant error: ${details}. No payment was made.`,
         },
       ]);
     } finally {
@@ -963,8 +1150,8 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
     try {
       const [profileResponse, productsResponse] = await Promise.all([
-        fetch(`http://127.0.0.1:8001/api/sellers/${encodeURIComponent(id)}`),
-        fetch(`http://127.0.0.1:8001/api/sellers/${encodeURIComponent(id)}/products?limit=100`),
+        fetch(apiUrl(`/api/sellers/${encodeURIComponent(id)}`)),
+        fetch(apiUrl(`/api/sellers/${encodeURIComponent(id)}/products?limit=100`)),
       ]);
 
       const profileData = await profileResponse.json().catch(() => ({}));
@@ -997,7 +1184,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     setSellerNotice("");
 
     try {
-      const response = await fetch("http://127.0.0.1:8001/api/sellers", {
+      const response = await fetch(apiUrl("/api/sellers"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1021,6 +1208,152 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     } finally {
       setSellerRegistering(false);
     }
+  }
+
+  async function submitCustomerAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (authBusy) return;
+
+    setAuthBusy(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch(
+        apiUrl(authMode === "signup" ? "/api/auth/signup" : "/api/auth/login"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: authEmail.trim(),
+            password: authPassword,
+          }),
+        },
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const detail = data.detail;
+        throw new Error(
+          typeof detail === "string"
+            ? detail
+            : authMode === "signup"
+              ? "Unable to create your account. Check your details and try again."
+              : "Unable to sign in. Check your email and password.",
+        );
+      }
+
+      const result = data as AuthResponse;
+      if (!result.access_token || !result.account?.email) {
+        throw new Error("The server returned an incomplete authentication response.");
+      }
+
+      setAuthToken(result.access_token);
+      setAuthAccount(result.account);
+      setAuthPassword("");
+      setAuthError("");
+    } catch (error) {
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : "Unable to connect to PayPilot AI. Please try again.",
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function logoutCustomer() {
+    const token = authToken;
+    setAuthToken("");
+    setAuthAccount(null);
+    setAuthPassword("");
+    setAuthMode("login");
+    setAuthError("");
+
+    if (token) {
+      try {
+        await fetch(apiUrl("/api/auth/logout"), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // Local logout still takes effect if the network is unavailable.
+      }
+    }
+  }
+
+  if (!authToken || !authAccount) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-card" aria-labelledby="auth-title">
+          <a className="auth-brand" href="#" aria-label="PayPilot AI">
+            <span className="brand-mark"><Send size={22} strokeWidth={2.5} /></span>
+            <span>PayPilot <span className="brand-ai">AI</span></span>
+          </a>
+          <p className="auth-eyebrow">YOUR SMART MONEY COMPANION</p>
+          <h1 id="auth-title">
+            {authMode === "signup" ? "Create your account" : "Welcome back"}
+          </h1>
+          <p className="auth-description">
+            {authMode === "signup"
+              ? "Create your account to get started with PayPilot AI."
+              : "Sign in to continue to your PayPilot AI workspace."}
+          </p>
+
+          <form className="auth-form" onSubmit={submitCustomerAuth}>
+            <label htmlFor="auth-email">Email address</label>
+            <input
+              id="auth-email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={authEmail}
+              onChange={(event) => setAuthEmail(event.target.value)}
+              maxLength={254}
+              required
+            />
+            <label htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+              placeholder={authMode === "signup" ? "At least 10 characters" : "Enter your password"}
+              value={authPassword}
+              onChange={(event) => setAuthPassword(event.target.value)}
+              minLength={authMode === "signup" ? 10 : 1}
+              maxLength={128}
+              required
+            />
+            {authError && <p className="auth-error" role="alert">{authError}</p>}
+            <button className="primary-button auth-submit" type="submit" disabled={authBusy}>
+              {authBusy
+                ? "Please wait…"
+                : authMode === "signup"
+                  ? "Create account"
+                  : "Sign in"}
+            </button>
+          </form>
+
+          <p className="auth-switch">
+            {authMode === "signup" ? "Already have an account?" : "New to PayPilot AI?"}
+            {" "}
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode(authMode === "signup" ? "login" : "signup");
+                setAuthError("");
+              }}
+            >
+              {authMode === "signup" ? "Sign in" : "Create an account"}
+            </button>
+          </p>
+          <p className="auth-footnote">
+            <ShieldCheck size={14} /> Your password is sent to the PayPilot API over the configured connection.
+          </p>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -1081,9 +1414,9 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <span className="upgrade-link">Explore PayPilot <ArrowUpRight size={14} /></span>
         </div>
         <div className="profile-row">
-          <div className="avatar profile-avatar">G</div>
-          <div className="profile-info"><strong>My Workspace</strong><span>Personal account</span></div>
-          <ChevronDown size={16} className="muted-icon" />
+          <div className="avatar profile-avatar">{authAccount.email.slice(0, 1).toUpperCase()}</div>
+          <div className="profile-info"><strong>{authAccount.email}</strong><span>Personal account</span></div>
+          <button type="button" className="auth-logout" onClick={logoutCustomer}>Log out</button>
         </div>
       </aside>
 
@@ -1093,9 +1426,30 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <div className="topbar-actions">
             <div className="sandbox-pill"><span /> SANDBOX MODE</div>
             <button className="icon-button" aria-label="Notifications"><Bell size={18} /><i /></button>
-            <div className="avatar top-avatar">G</div>
+            <div className="avatar top-avatar" title={authAccount.email}>{authAccount.email.slice(0, 1).toUpperCase()}</div>
           </div>
         </header>
+
+        {marketplaceNotice && (
+          <div
+            className="marketplace-message"
+            role={marketplaceNoticeType === "error" ? "alert" : "status"}
+            aria-live={marketplaceNoticeType === "error" ? "assertive" : "polite"}
+            style={{
+              margin: "16px 0",
+              borderLeft: `4px solid ${
+                marketplaceNoticeType === "error"
+                  ? "#b42318"
+                  : marketplaceNoticeType === "success"
+                    ? "#067647"
+                    : "#64748b"
+              }`,
+              padding: "12px 16px",
+            }}
+          >
+            {marketplaceNotice}
+          </div>
+        )}
 
         <div className="page-content">
 
@@ -1928,23 +2282,6 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
               <span>Estimated total</span>
               <strong>{formatMoney(cartTotalMinor / 100, cartItems[0]?.product.currency || "USD")}</strong>
             </div>
-            {marketplaceNotice && (
-              <p
-                className="marketplace-cart-note"
-                role="status"
-                aria-live="polite"
-                style={{
-                  color:
-                    marketplaceNoticeType === "error"
-                      ? "#b42318"
-                      : marketplaceNoticeType === "success"
-                        ? "#067647"
-                        : "inherit",
-                }}
-              >
-                {marketplaceNotice}
-              </p>
-            )}
             <button
               type="button"
               className="marketplace-checkout-button"
@@ -2106,7 +2443,10 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
               {item.role === "assistant" && (
                 <span className="marketplace-chat-avatar"><Bot size={15} /></span>
               )}
-              <p className="marketplace-chat-bubble">{item.text}</p>
+              <div className="marketplace-chat-content">
+                <p className="marketplace-chat-bubble">{item.text}</p>
+                {item.role === "assistant" && <SemanticDetails semantic={item.semantic} />}
+              </div>
             </div>
           ))}
           {shoppingSending && (
@@ -2209,7 +2549,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
           <section className="welcome-row">
             <div>
               <div className="eyebrow"><Sparkles size={14} /> YOUR FINANCIAL COPILOT</div>
-              <h1>Good morning<span className="wave"> âœ¨</span></h1>
+              <h1>{new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 18 ? "Good afternoon" : "Good evening"}<span className="wave"> {"\u2728"}</span></h1>
               <p className="page-subtitle">Your money moves. Let's make every move count.</p>
             </div>
             <button className="primary-button" onClick={() => { setPaymentNotice(""); setPaymentOpen(true); }}><Plus size={18} /> New payment</button>
@@ -2234,7 +2574,9 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
             </article>
             <article className="stat-card">
               <div className="stat-top"><span>Pending payments</span><div className="stat-icon amber"><Clock3 size={19} /></div></div>
-              <div className="stat-value">{dashboard ? String(dashboard.pending_payments).padStart(2, "0") : "â€”"}</div>
+              <div className="stat-value">
+  {dashboard ? dashboard.pending_payments : "--"}
+</div>
               <div className="stat-foot"><span className="pending-text">Awaiting capture</span><span className="stat-note">Recorded orders</span></div>
             </article>
           </section>
@@ -2258,7 +2600,10 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
                 {conversation.map((item, index) => (
                   <div className={`message-row ${item.role}`} key={index}>
                     {item.role === "assistant" && <div className="message-avatar"><Bot size={15} /></div>}
-                    <div className="message-bubble">{item.text}</div>
+                    <div className="message-content">
+                      <div className="message-bubble">{item.text}</div>
+                      {item.role === "assistant" && <SemanticDetails semantic={item.semantic} />}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2318,7 +2663,7 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
             </div>
           </section>
 
-          <footer className="page-footer"><span>Â© 2026 PayPilot AI</span><span><ShieldCheck size={13} /> Built with security in mind</span><span><Zap size={13} /> Powered by intelligent workflows</span></footer>
+          <footer className="page-footer"><span>{"\u00A9"} 2026 PayPilot AI</span><span><ShieldCheck size={13} /> Built with security in mind</span><span><Zap size={13} /> Powered by intelligent workflows</span></footer>
         </div>
         </div>
       </main>
@@ -2327,3 +2672,9 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 }
 
 export default App;
+
+
+
+
+
+

@@ -1,4 +1,13 @@
+﻿from collections import defaultdict, deque
+from threading import Lock
+from time import monotonic
+from fastapi import Request
+
 from datetime import datetime, timezone
+from hashlib import pbkdf2_hmac, sha256
+import hmac
+import secrets
+from datetime import timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -19,7 +28,7 @@ PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
 PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com"
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from openai import OpenAI
 
 
@@ -161,6 +170,39 @@ def init_database():
         """)
 
 
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS customer_accounts (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS customer_sessions (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                FOREIGN KEY (account_id) REFERENCES customer_accounts(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_customer_sessions_account
+            ON customer_sessions(account_id)
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_customer_sessions_expiry
+            ON customer_sessions(expires_at)
+        """)
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -211,6 +253,113 @@ app = FastAPI(
     version="0.1.0",
 )
 
+
+from paypal_offers import PayPalOffer, list_offers
+
+
+# No live promotion feed has been configured yet. Keep this empty until
+# offers can be verified against an authoritative source.
+PAYPAL_OFFERS: list[PayPalOffer] = []
+
+
+@app.get("/api/paypal/offers")
+def paypal_offers_endpoint(country_code: str = "ZA"):
+    """Return country-eligible offers without inventing promotions."""
+    try:
+        offers = list_offers(PAYPAL_OFFERS, country_code)
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    normalized_country = country_code.strip().upper()
+    if normalized_country == "ZA":
+        official_links = {
+            "account": "https://www.paypal.com/za/webapps/mpp/account-selection",
+            "business": "https://www.paypal.com/za/business/open-business-account",
+            "sign_in": "https://www.paypal.com/signin",
+        }
+    else:
+        official_links = {
+            "account": "https://www.paypal.com/",
+            "business": "https://www.paypal.com/",
+            "sign_in": "https://www.paypal.com/signin",
+        }
+
+    verified_offers = [
+        offer for offer in offers
+        if offer.status == "verified_active"
+    ]
+    offers_to_check = [
+        offer for offer in offers
+        if offer.status == "check_official_page"
+    ]
+
+    if verified_offers:
+        status = "offers_available"
+        message = "Verified offers are listed below. Check each offer's eligibility and terms."
+    elif offers_to_check:
+        status = "offers_require_verification"
+        message = (
+            "No verified offers are available for this country. "
+            "Some offer records require checking on the official PayPal page; "
+            "they are not confirmed active promotions."
+        )
+    else:
+        status = "no_verified_offers"
+        message = (
+            "PayPilot AI has no verified offers for this country right now. "
+            "Check PayPal's official website for current promotions and eligibility."
+        )
+
+    return {
+        "country_code": normalized_country,
+        "status": status,
+        "message": message,
+        "offers": [offer.model_dump(mode="json") for offer in offers],
+        "count": len(offers),
+        "verified_count": len(verified_offers),
+        "unverified_count": len(offers_to_check),
+        "live_feed_configured": False,
+        "official_links": official_links,
+    }
+
+
+def build_paypal_offer_context(country_code: str = "ZA") -> dict:
+    """Build safe, country-aware context for confirmed offers and official links."""
+    normalized_country = country_code.strip().upper()
+    try:
+        eligible_offers = list_offers(PAYPAL_OFFERS, normalized_country)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    verified_offers = [
+        offer.model_dump(mode="json")
+        for offer in eligible_offers
+        if offer.status == "verified_active"
+    ]
+    offers_to_check = [
+        offer.model_dump(mode="json")
+        for offer in eligible_offers
+        if offer.status == "check_official_page"
+    ]
+
+    endpoint_data = paypal_offers_endpoint(normalized_country)
+
+    return {
+        "country_code": normalized_country,
+        "verified_offers": verified_offers,
+        "offers_to_check": offers_to_check,
+        "count": len(verified_offers),
+        "message": (
+            "Only verified_offers may be described as confirmed promotions. "
+            "offers_to_check are unconfirmed and must never be presented as active discounts."
+            if verified_offers or offers_to_check
+            else "No offers are configured for this country. Do not claim a promotion exists; direct the shopper to the official PayPal links."
+        ),
+        "official_links": endpoint_data["official_links"],
+    }
+
+
 PAYPILOT_FRONTEND_URL = os.getenv(
     "PAYPILOT_FRONTEND_URL",
     "http://localhost:5173",
@@ -229,12 +378,21 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-Admin-Token"],
+    allow_headers=["Content-Type", "X-Admin-Token", "Authorization"],
 )
 
 
 class AssistantRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
+    country_code: str = Field(default="ZA", min_length=2, max_length=2)
+
+    @field_validator("country_code")
+    @classmethod
+    def validate_country_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized.isalpha() or len(normalized) != 2:
+            raise ValueError("country_code must be a two-letter country code.")
+        return normalized
 
 
 class PaymentIntentRequest(BaseModel):
@@ -397,6 +555,262 @@ def require_admin_token(token: str | None):
         )
     if not token or not __import__("hmac").compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Invalid admin token.")
+
+
+
+class CustomerSignupRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=10, max_length=128)
+
+
+class CustomerLoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def _customer_password_hash(password: str, salt_hex: str) -> str:
+    salt = bytes.fromhex(salt_hex)
+    derived = pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 600_000)
+    return derived.hex()
+
+
+def _create_customer_session(account_id: str, connection=None) -> dict:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(hours=24)
+
+    def insert_session(db_connection):
+        db_connection.execute(
+            """
+            INSERT INTO customer_sessions
+                (id, account_id, token_hash, created_at, expires_at, revoked_at)
+            VALUES (?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                secrets.token_hex(16),
+                account_id,
+                sha256(token.encode("utf-8")).hexdigest(),
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+
+    if connection is None:
+        with database_connection() as db_connection:
+            insert_session(db_connection)
+    else:
+        insert_session(connection)
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_at": expires.isoformat(),
+    }
+
+
+def _get_authenticated_customer(authorization: str | None) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    token = authorization[7:].strip()
+    if not token or len(token) > 512:
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+
+    token_hash = sha256(token.encode("utf-8")).hexdigest()
+    with database_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT a.id, a.email, a.created_at, s.expires_at
+            FROM customer_sessions s
+            JOIN customer_accounts a ON a.id = s.account_id
+            WHERE s.token_hash = ? AND s.revoked_at IS NULL
+            """,
+            (token_hash,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+
+    try:
+        expires = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+
+    return {"id": row["id"], "email": row["email"],
+            "created_at": row["created_at"]}
+
+
+@app.post("/api/auth/signup", status_code=201)
+def customer_signup(request: CustomerSignupRequest):
+    email = request.email.strip().lower()
+    if (
+        "@" not in email
+        or email.startswith("@")
+        or "." not in email.rsplit("@", 1)[-1]
+        or any(character.isspace() for character in email)
+    ):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+
+    salt_hex = secrets.token_hex(16)
+    password_hash = _customer_password_hash(request.password, salt_hex)
+    account_id = secrets.token_hex(16)
+    now = utc_now()
+
+    try:
+        with database_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO customer_accounts
+                    (id, email, password_salt, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (account_id, email, salt_hex, password_hash, now, now),
+            )
+            session = _create_customer_session(account_id, connection)
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail="An account with that email already exists.",
+        )
+    return {
+        **session,
+        "account": {"id": account_id, "email": email, "created_at": now},
+    }
+
+
+# Development-stage login rate limiter.
+# Production should use shared storage or an API gateway.
+LOGIN_RATE_LIMIT = 5
+LOGIN_RATE_WINDOW_SECONDS = 60
+MAX_TRACKED_LOGIN_IPS = 10_000
+
+_login_attempts = defaultdict(deque)
+_login_attempts_lock = Lock()
+
+
+def check_login_rate_limit(client_ip: str) -> tuple[bool, int]:
+    """Apply a bounded, in-memory sliding-window login rate limit."""
+    now = monotonic()
+
+    with _login_attempts_lock:
+        # Remove expired attempts and empty IP entries.
+        expired_ips = []
+
+        for ip, attempts in _login_attempts.items():
+            while (
+                attempts
+                and now - attempts[0] >= LOGIN_RATE_WINDOW_SECONDS
+            ):
+                attempts.popleft()
+
+            if not attempts:
+                expired_ips.append(ip)
+
+        for ip in expired_ips:
+            del _login_attempts[ip]
+
+        attempts = _login_attempts.get(client_ip)
+
+        # Fail closed if the tracking capacity is exhausted.
+        if attempts is None:
+            if len(_login_attempts) >= MAX_TRACKED_LOGIN_IPS:
+                return False, LOGIN_RATE_WINDOW_SECONDS
+
+            attempts = deque()
+            _login_attempts[client_ip] = attempts
+
+        if len(attempts) >= LOGIN_RATE_LIMIT:
+            retry_after = max(
+                1,
+                int(
+                    LOGIN_RATE_WINDOW_SECONDS
+                    - (now - attempts[0])
+                    + 0.999
+                ),
+            )
+            return False, retry_after
+
+        attempts.append(now)
+        return True, 0
+@app.post("/api/auth/login")
+def customer_login(
+    request: CustomerLoginRequest,
+    http_request: Request,
+):
+    client_ip = (
+        http_request.client.host
+        if http_request.client is not None
+        else "unknown"
+    )
+
+    allowed, retry_after = check_login_rate_limit(client_ip)
+
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    email = request.email.strip().lower()
+
+    with database_connection() as connection:
+        account = connection.execute(
+            """
+            SELECT id, email, password_salt, password_hash, created_at
+            FROM customer_accounts
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
+
+    # Use the same public error for unknown emails and incorrect passwords.
+    if not account:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    candidate_hash = _customer_password_hash(
+        request.password, account["password_salt"]
+    )
+    if not hmac.compare_digest(candidate_hash, account["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    session = _create_customer_session(account["id"])
+    return {
+        **session,
+        "account": {
+            "id": account["id"],
+            "email": account["email"],
+            "created_at": account["created_at"],
+        },
+    }
+
+
+@app.get("/api/auth/me")
+def customer_me(authorization: str | None = Header(default=None, alias="Authorization")):
+    account = _get_authenticated_customer(authorization)
+    return {"authenticated": True, "account": account}
+
+
+@app.post("/api/auth/logout")
+def customer_logout(authorization: str | None = Header(default=None, alias="Authorization")):
+    # Logout is idempotent for missing, invalid, or already revoked sessions.
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        if token and len(token) <= 512:
+            token_hash = sha256(token.encode("utf-8")).hexdigest()
+            with database_connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE customer_sessions
+                    SET revoked_at = ?
+                    WHERE token_hash = ? AND revoked_at IS NULL
+                    """,
+                    (utc_now(), token_hash),
+                )
+    return {"status": "logged_out"}
 
 
 @app.post("/api/sellers", status_code=201)
@@ -848,6 +1262,26 @@ def list_marketplace_categories():
     return {"categories": [row["category"] for row in rows]}
 
 
+def _build_semantic_response(
+    intent: str,
+    answer: str,
+    *,
+    key_points: list | None = None,
+    evidence: list | None = None,
+    recommendations: list | None = None,
+    next_action: str | None = None,
+) -> dict:
+    """Create a consistent, machine-readable assistant response."""
+    return {
+        "intent": intent,
+        "answer": answer,
+        "key_points": key_points or [],
+        "evidence": evidence or [],
+        "recommendations": recommendations or [],
+        "next_action": next_action,
+    }
+
+
 @app.post("/api/assistant")
 def assistant(request: AssistantRequest):
     """Answer transaction questions from persisted PayPilot records."""
@@ -858,6 +1292,11 @@ def assistant(request: AssistantRequest):
         return {
             "status": "needs_input",
             "reply": "Ask me about a purchase, payment status, order ID, or spending total.",
+            "semantic_response": _build_semantic_response(
+                "needs_input",
+                "Ask me about a purchase, payment status, order ID, or spending total.",
+                next_action="Enter a transaction question.",
+            ),
             "payment_created": False,
         }
 
@@ -940,6 +1379,17 @@ def assistant(request: AssistantRequest):
         return {
             "status": "answered_from_transactions",
             "reply": reply,
+            "semantic_response": _build_semantic_response(
+                "transaction_lookup",
+                reply,
+                key_points=[f"Matching order records: {len(transactions)}"],
+                evidence=[{
+                    "source": "local SQLite transactions table",
+                    "record_count": len(transactions),
+                    "order_id": order_id,
+                }],
+                next_action=None if transactions else "Verify the order ID and environment.",
+            ),
             "payment_created": False,
             "requires_confirmation": False,
             "transaction_context": {"source": "local SQLite transactions table"},
@@ -1024,6 +1474,19 @@ def assistant(request: AssistantRequest):
         return {
             "status": "answered_from_transactions",
             "reply": reply,
+            "semantic_response": _build_semantic_response(
+                "transaction_summary",
+                reply,
+                key_points=[
+                    f"Transaction records examined: {len(transactions)}",
+                    "Totals are grouped by currency where applicable.",
+                ],
+                evidence=[{
+                    "source": "local SQLite transactions table",
+                    "record_count": len(transactions),
+                    "currency_totals_grouped": True,
+                }],
+            ),
             "payment_created": False,
             "requires_confirmation": False,
             "transaction_context": {
@@ -1039,6 +1502,11 @@ def assistant(request: AssistantRequest):
             "I can look up an order, list completed or pending transactions, "
             "or summarise spending by currency. What would you like to know? "
             "I haven't created or sent a payment."
+        ),
+        "semantic_response": _build_semantic_response(
+            "needs_clarification",
+            "I can look up an order, list completed or pending transactions, or summarise spending by currency. What would you like to know? I haven't created or sent a payment.",
+            next_action="Ask about an order, transaction status, or spending total.",
         ),
         "payment_created": False,
         "requires_confirmation": True,
@@ -1090,6 +1558,8 @@ def shopping_assistant(request: AssistantRequest):
         for row in rows
     ]
 
+    offer_context = build_paypal_offer_context(request.country_code)
+
     if not catalogue:
         return {
             "status": "catalogue_empty",
@@ -1097,7 +1567,18 @@ def shopping_assistant(request: AssistantRequest):
                 "I can help you find a product, but there are no active, "
                 "in-stock listings in the marketplace right now. Please try again later."
             ),
+            "semantic_response": _build_semantic_response(
+                "product_discovery",
+                "I can help you find a product, but there are no active, in-stock listings in the marketplace right now. Please try again later.",
+                evidence=[{
+                    "source": "active marketplace catalogue",
+                    "available_product_count": 0,
+                }],
+                next_action="Try again later or check the marketplace catalogue.",
+            ),
             "products": [],
+            "country_code": offer_context["country_code"],
+            "paypal_offer_context": offer_context,
             "payment_created": False,
         }
 
@@ -1119,19 +1600,33 @@ def shopping_assistant(request: AssistantRequest):
                         "exact name and details appear in the catalogue. Prices and stock "
                         "must match the supplied data. If nothing fits, say so and ask a "
                         "useful follow-up question. Product descriptions may be incomplete; "
-                        "do not infer unsupported features. Explain that checkout is handled "
-                        "separately by PayPal Sandbox in this prototype. Never claim a "
-                        "payment was made, create an order, capture payment, or ask the user "
-                        "to provide card details in chat. Keep the reply clear and concise."
+                        "do not infer unsupported features. "
+                        "Use the supplied PayPal offer context as the only source for "
+                        "PayPal promotions. Describe an offer as a confirmed promotion only "
+                        "when it appears in verified_offers with status verified_active. "
+                        "Offers in offers_to_check are unconfirmed: do not describe them as "
+                        "active discounts or promise eligibility. Never invent an offer, "
+                        "discount amount, expiry date, or eligibility rule. Do not claim a "
+                        "discount is automatically applied. If no verified offer is available, "
+                        "say that PayPilot AI has no verified offer for the shopper's country "
+                        "and provide relevant official PayPal links from the context. "
+                        "Explain that checkout is handled separately by PayPal Sandbox in "
+                        "this prototype. Never claim a payment was made, create an order, "
+                        "capture payment, or ask the user to provide card details in chat. "
+                        "Keep the reply clear and concise."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Shopper request:\n"
+                        "Shopper country: "
+                        + request.country_code
+                        + "\n\nShopper request:\n"
                         + message
                         + "\n\nAvailable catalogue JSON (authoritative):\n"
                         + json.dumps(catalogue, ensure_ascii=False)
+                        + "\n\nPayPal offer context (authoritative):\n"
+                        + json.dumps(offer_context, ensure_ascii=False)
                     ),
                 },
             ],
@@ -1154,10 +1649,24 @@ def shopping_assistant(request: AssistantRequest):
     return {
         "status": "answered_from_catalogue",
         "reply": reply.strip(),
+        "semantic_response": _build_semantic_response(
+            "product_discovery",
+            reply.strip(),
+            key_points=[f"Available catalogue products: {len(catalogue)}"],
+            evidence=[{
+                "source": "active, in-stock marketplace catalogue",
+                "available_product_count": len(catalogue),
+                "product_ids": [product["id"] for product in catalogue],
+            }],
+            recommendations=[],
+            next_action="Review product details and use the separate checkout flow if desired.",
+        ),
         "products": catalogue,
         "payment_created": False,
         "requires_confirmation": False,
         "catalogue_count": len(catalogue),
+        "country_code": offer_context["country_code"],
+        "paypal_offer_context": offer_context,
     }
 
 
@@ -2078,3 +2587,7 @@ def list_marketplace_orders(
             })
 
     return {"orders": results, "count": len(results)}
+
+
+
+
