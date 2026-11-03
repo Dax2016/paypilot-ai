@@ -22,7 +22,7 @@ def make_offer(**overrides):
         "last_verified_at": NOW - timedelta(minutes=5),
         "eligibility_notes": "Test eligibility text.",
         "discount_claim": "Test claim only.",
-        "expires_at": NOW + timedelta(days=1),
+        "expires_at": None,
     }
     data.update(overrides)
     return PayPalOffer(**data)

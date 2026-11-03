@@ -1,0 +1,69 @@
+﻿{
+  "facts": [
+    {
+      "fact_code": "PP-IQ-001",
+      "title": "How PayPal payments work",
+      "fact_text": "PayPal allows users to send and receive payments electronically using supported funding methods and account features.",
+      "explanation": "The payment methods available depend on the user's country, account status, transaction type and PayPal's current service availability. Always check the applicable country-specific documentation.",
+      "category": "PAYMENT_BASICS",
+      "country_scope": "GLOBAL",
+      "source_url": "https://www.paypal.com/us/digital-wallet",
+      "source_title": "PayPal Digital Wallet",
+      "source_type": "OFFICIAL_PAYPAL",
+      "source_excerpt": "Official PayPal information about its digital wallet and payment services.",
+      "difficulty": "BEGINNER"
+    },
+    {
+      "fact_code": "PP-IQ-002",
+      "title": "Why payment security matters",
+      "fact_text": "PayPal provides security features intended to help protect account holders and their transactions.",
+      "explanation": "Users should also protect their own accounts by using strong unique passwords, enabling available security features and avoiding suspicious links or requests for credentials.",
+      "category": "ACCOUNT_SECURITY",
+      "country_scope": "GLOBAL",
+      "source_url": "https://www.paypal.com/us/security",
+      "source_title": "PayPal Security",
+      "source_type": "OFFICIAL_PAYPAL",
+      "source_excerpt": "Official PayPal security information.",
+      "difficulty": "BEGINNER"
+    },
+    {
+      "fact_code": "PP-IQ-003",
+      "title": "Understanding payment refunds",
+      "fact_text": "A refund is a payment reversal initiated by a seller or merchant to return money to a customer.",
+      "explanation": "Refund timing and the destination of refunded funds can depend on the original funding method, transaction status and financial institution. Check the transaction details for the applicable information.",
+      "category": "REFUNDS",
+      "country_scope": "GLOBAL",
+      "source_url": "https://www.paypal.com/us/cshelp/article/how-do-i-issue-a-refund-help101",
+      "source_title": "PayPal Help - Issuing a Refund",
+      "source_type": "OFFICIAL_PAYPAL_HELP",
+      "source_excerpt": "Official PayPal guidance about issuing refunds.",
+      "difficulty": "BEGINNER"
+    },
+    {
+      "fact_code": "PP-IQ-004",
+      "title": "Understanding transaction disputes",
+      "fact_text": "A PayPal dispute allows a buyer to raise a problem with a transaction through the applicable resolution process.",
+      "explanation": "Dispute eligibility, deadlines and available outcomes depend on the transaction and applicable PayPal policies. Users should consult the relevant Resolution Center guidance.",
+      "category": "DISPUTES",
+      "country_scope": "GLOBAL",
+      "source_url": "https://www.paypal.com/us/cshelp/article/what-is-the-resolution-center-help246",
+      "source_title": "PayPal Help - Resolution Center",
+      "source_type": "OFFICIAL_PAYPAL_HELP",
+      "source_excerpt": "Official PayPal information about the Resolution Center.",
+      "difficulty": "INTERMEDIATE"
+    },
+    {
+      "fact_code": "PP-IQ-005",
+      "title": "Recognising suspicious payment requests",
+      "fact_text": "Unexpected messages requesting passwords, verification codes or sensitive account information should be treated with caution.",
+      "explanation": "Avoid following suspicious links. Access PayPal by entering its official website address or using the official application, and report suspected phishing through PayPal's security guidance.",
+      "category": "FRAUD_PREVENTION",
+      "country_scope": "GLOBAL",
+      "source_url": "https://www.paypal.com/us/security/report-suspicious-messages",
+      "source_title": "PayPal Security - Reporting Suspicious Messages",
+      "source_type": "OFFICIAL_PAYPAL",
+      "source_excerpt": "Official PayPal security guidance for suspicious messages.",
+      "difficulty": "BEGINNER"
+    }
+  ]
+}

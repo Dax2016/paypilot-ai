@@ -5,14 +5,15 @@
   Bell,
   Bot,
   BrainCircuit,
+  BookOpen,
+  Flame,
+  Award,
   CheckCircle2,
-  CircleHelp,
   Clock3,
   CreditCard,
   LayoutDashboard,
   Plus,
   Send,
-  Settings2,
   ShieldCheck,
   Search,
   ShoppingBag,
@@ -115,7 +116,17 @@ type ChatMessage = {
   semantic?: SemanticResponse;
 };
 
-type ShoppingChatMessage = ChatMessage;
+type PayPalOfficialLinks = {
+  account?: string;
+  business?: string;
+  sign_in?: string;
+};
+
+type ShoppingChatMessage = ChatMessage & {
+  recommendedProductIds?: string[];
+  paypalOfficialLinks?: PayPalOfficialLinks;
+  paypalCountryCode?: string;
+};
 
 function SemanticDetails({ semantic }: { semantic?: SemanticResponse }) {
   if (!semantic) return null;
@@ -259,6 +270,68 @@ type SellerProduct = {
   created_at?: string;
   updated_at?: string;
 };
+type ActiveView =
+  | "overview"
+  | "marketplace"
+  | "orders"
+  | "admin"
+  | "seller"
+  | "paypal-iq";
+
+
+type PayPalIQFact = {
+  id: string;
+  fact_code?: string;
+  title: string;
+  fact_text: string;
+  explanation?: string | null;
+  category: string;
+  country_scope?: string;
+  country_code?: string | null;
+  source_url?: string | null;
+  source_title?: string | null;
+  source_type?: string | null;
+  source_excerpt?: string | null;
+  verified_at?: string | null;
+  review_at?: string | null;
+  fact_version?: number;
+  difficulty?: string;
+};
+
+type PayPalIQQuestion = {
+  id: string;
+  fact_id: string;
+  question: string;
+  options: string[];
+  difficulty: string;
+  fact_title: string;
+  category: string;
+};
+
+type PayPalIQProgress = {
+  total_points: number;
+  quizzes_completed: number;
+  facts_viewed: number;
+  current_streak: number;
+  longest_streak: number;
+  last_activity_date: string | null;
+};
+
+type PayPalIQQuizResult = {
+  question_id: string;
+  selected_option: string;
+  is_correct: boolean;
+  correct_option: string;
+  explanation: string;
+  points_awarded: number;
+  questions_answered_today: number;
+  quiz_completed_today: boolean;
+};
+type OverviewSection =
+  | "dashboard"
+  | "assistant"
+  | "transactions"
+  | "payments";
 
 type SellerApplication = {
   id: string;
@@ -306,7 +379,21 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   const [dashboardError, setDashboardError] = useState("");
   const [sending, setSending] = useState(false);
 
-  const [activeView, setActiveView] = useState<"overview" | "marketplace" | "orders" | "admin" | "seller">("overview");
+  const [activeView, setActiveView] = useState<ActiveView>("overview");
+  const [paypalIQDailyFact, setPaypalIQDailyFact] = useState<PayPalIQFact | null>(null);
+  const [paypalIQFacts, setPaypalIQFacts] = useState<PayPalIQFact[]>([]);
+  const [paypalIQCategories, setPaypalIQCategories] = useState<string[]>([]);
+  const [paypalIQQuestions, setPaypalIQQuestions] = useState<PayPalIQQuestion[]>([]);
+  const [paypalIQProgress, setPaypalIQProgress] = useState<PayPalIQProgress | null>(null);
+  const [paypalIQResults, setPaypalIQResults] = useState<Record<string, PayPalIQQuizResult>>({});
+  const [paypalIQSelectedAnswers, setPaypalIQSelectedAnswers] = useState<Record<string, string>>({});
+  const [paypalIQSelectedCategory, setPaypalIQSelectedCategory] = useState("ALL");
+  const [paypalIQLoading, setPaypalIQLoading] = useState(false);
+  const [paypalIQError, setPaypalIQError] = useState("");
+  const [activeSection, setActiveSection] =
+    useState<OverviewSection>("dashboard");
+  const [pendingSection, setPendingSection] =
+    useState<OverviewSection | null>(null);
   const [products, setProducts] = useState<MarketplaceProduct[]>([]);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [productSearch, setProductSearch] = useState("");
@@ -680,6 +767,110 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   ]);
 
 
+  const navigateToView = (view: ActiveView) => {
+    setActiveView(view);
+    setActiveSection("dashboard");
+    setPendingSection(null);
+  };
+
+  const navigateToSection = (section: OverviewSection) => {
+    setActiveView("overview");
+    setActiveSection(section);
+    setPendingSection(section);
+  };
+
+  useEffect(() => {
+    if (activeView !== "overview" || pendingSection === null) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(pendingSection)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+
+      setPendingSection(null);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeView, pendingSection]);
+  useEffect(() => {
+    if (activeView !== "paypal-iq" || !authToken) return;
+
+    let cancelled = false;
+
+    async function loadPayPalIQ() {
+      setPaypalIQLoading(true);
+      setPaypalIQError("");
+
+      const headers = {
+        Authorization: `Bearer ${authToken}`,
+      };
+
+      try {
+        const [dailyResponse, factsResponse, categoriesResponse, quizResponse, progressResponse] =
+          await Promise.all([
+            fetch(apiUrl("/api/paypal-iq/daily"), { headers }),
+            fetch(apiUrl("/api/paypal-iq/facts"), { headers }),
+            fetch(apiUrl("/api/paypal-iq/categories"), { headers }),
+            fetch(apiUrl("/api/paypal-iq/quiz"), { headers }),
+            fetch(apiUrl("/api/paypal-iq/progress"), { headers }),
+          ]);
+
+        const responses = [
+          dailyResponse,
+          factsResponse,
+          categoriesResponse,
+          quizResponse,
+          progressResponse,
+        ];
+
+        if (responses.some((response) => !response.ok)) {
+          throw new Error("Could not load PayPal IQ. Please try again.");
+        }
+
+        const [dailyData, factsData, categoriesData, quizData, progressData] =
+          await Promise.all([
+            dailyResponse.json(),
+            factsResponse.json(),
+            categoriesResponse.json(),
+            quizResponse.json(),
+            progressResponse.json(),
+          ]);
+
+        if (cancelled) return;
+
+        setPaypalIQDailyFact(dailyData.fact ?? null);
+        setPaypalIQFacts(Array.isArray(factsData.items) ? factsData.items : []);
+        setPaypalIQCategories(
+          Array.isArray(categoriesData.categories) ? categoriesData.categories : []
+        );
+        setPaypalIQQuestions(
+          Array.isArray(quizData.questions) ? quizData.questions : []
+        );
+        setPaypalIQProgress(progressData.progress ?? null);
+        setPaypalIQResults({});
+        setPaypalIQSelectedAnswers({});
+      } catch (error) {
+        if (!cancelled) {
+          setPaypalIQError(
+            error instanceof Error
+              ? error.message
+              : "Could not load PayPal IQ."
+          );
+        }
+      } finally {
+        if (!cancelled) setPaypalIQLoading(false);
+      }
+    }
+
+    void loadPayPalIQ();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, authToken]);
   useEffect(() => {
     if (activeView !== "marketplace") return;
 
@@ -1036,6 +1227,32 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
       setPaymentBusy(false);
     }
   };
+  async function openPayPalResource(
+    resourceKey: "account" | "business" | "sign_in",
+    url: string,
+    countryCode: string
+  ) {
+    // Open immediately from the click gesture; analytics must never block navigation.
+    const paypalWindow = window.open(url, "_blank", "noopener,noreferrer");
+
+    try {
+      await fetch(apiUrl("/api/paypal/promo-clicks"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource_key: resourceKey,
+          country_code: countryCode,
+        }),
+      });
+    } catch {
+      // A tracking failure must not prevent access to the official PayPal page.
+    }
+
+    if (!paypalWindow) {
+      window.location.assign(url);
+    }
+  }
+
   async function sendShoppingMessage() {
     const text = shoppingMessage.trim();
     if (!text || shoppingSending) return;
@@ -1074,6 +1291,20 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
             data.semantic_response && typeof data.semantic_response === "object"
               ? data.semantic_response as SemanticResponse
               : undefined,
+          recommendedProductIds: Array.isArray(data.recommended_product_ids)
+            ? data.recommended_product_ids
+                .filter((id: unknown): id is string => typeof id === "string")
+                .slice(0, 4)
+            : [],
+          paypalOfficialLinks:
+            data.paypal_offer_context?.official_links &&
+            typeof data.paypal_offer_context.official_links === "object"
+              ? data.paypal_offer_context.official_links as PayPalOfficialLinks
+              : undefined,
+          paypalCountryCode:
+            typeof data.paypal_offer_context?.country_code === "string"
+              ? data.paypal_offer_context.country_code
+              : "ZA",
         },
       ]);
     } catch (error) {
@@ -1359,53 +1590,59 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" aria-label="PayPilot AI home">
+        <a className="brand" href="#dashboard" onClick={() => navigateToSection("dashboard")} aria-label="PayPilot AI home">
           <div className="brand-mark"><Send size={22} strokeWidth={2.5} /></div>
           <span>PayPilot<span className="brand-ai"> AI</span><small>YOUR SMART MONEY COMPANION</small></span>
         </a>
 
         <div className="workspace-label">WORKSPACE</div>
-        <nav className="nav-menu">
-          <a className="nav-item active" href="#dashboard"><LayoutDashboard size={18} /> Overview</a>
-          <a className="nav-item" href="#assistant"><BrainCircuit size={18} /> AI Assistant <span className="nav-badge">AI</span></a>
+        <nav className="nav-menu" aria-label="Main navigation">
           <button
             type="button"
-            className={`nav-item${activeView === "seller" ? " active" : ""}`}
-            onClick={() => setActiveView("seller")}
+            className={`nav-item${activeView === "overview" && activeSection === "dashboard" ? " active" : ""}`}
+            aria-current={activeView === "overview" && activeSection === "dashboard" ? "page" : undefined}
+            onClick={() => navigateToSection("dashboard")}
           >
+            <LayoutDashboard size={18} /> Overview
+          </button>
+          <button
+            type="button"
+            className={`nav-item${activeView === "overview" && activeSection === "assistant" ? " active" : ""}`}
+            aria-current={activeView === "overview" && activeSection === "assistant" ? "page" : undefined}
+            onClick={() => navigateToSection("assistant")}
+          >
+            <BrainCircuit size={18} /> AI Assistant <span className="nav-badge">AI</span>
+          </button>
+          <button type="button" className={`nav-item${activeView === "paypal-iq" ? " active" : ""}`} onClick={() => navigateToView("paypal-iq")}>
+            <BookOpen size={18} /> PayPal IQ
+          </button>
+          <button type="button" className={`nav-item${activeView === "seller" ? " active" : ""}`} onClick={() => navigateToView("seller")}>
             <Store size={18} /> Seller Dashboard
           </button>
-          <button
-            type="button"
-            className={`nav-item${activeView === "marketplace" ? " active" : ""}`}
-            onClick={() => setActiveView("marketplace")}
-          >
+          <button type="button" className={`nav-item${activeView === "marketplace" ? " active" : ""}`} onClick={() => navigateToView("marketplace")}>
             <ShoppingBag size={18} /> Marketplace
           </button>
-          <button
-            type="button"
-            className={`nav-item${activeView === "orders" ? " active" : ""}`}
-            onClick={() => setActiveView("orders")}
-          >
+          <button type="button" className={`nav-item${activeView === "orders" ? " active" : ""}`} onClick={() => navigateToView("orders")}>
             <Activity size={18} /> Orders
           </button>
-          <button
-            type="button"
-            className={`nav-item${activeView === "admin" ? " active" : ""}`}
-            onClick={() => setActiveView("admin")}
-          >
+          <button type="button" className={`nav-item${activeView === "admin" ? " active" : ""}`} onClick={() => navigateToView("admin")}>
             <ShieldCheck size={18} /> Admin Review
           </button>
-          <a className="nav-item" href="#transactions"><Activity size={18} /> Transactions</a>
-          <a className="nav-item" href="#payments"><Wallet size={18} /> Payments</a>
+          <button
+            type="button"
+            className={`nav-item${activeView === "overview" && activeSection === "transactions" ? " active" : ""}`}
+            onClick={() => navigateToSection("transactions")}
+          >
+            <Activity size={18} /> Transactions
+          </button>
+          <button
+            type="button"
+            className={`nav-item${activeView === "overview" && activeSection === "payments" ? " active" : ""}`}
+            onClick={() => navigateToSection("payments")}
+          >
+            <Wallet size={18} /> Payments
+          </button>
         </nav>
-
-        <div className="workspace-label tools-label">PREFERENCES</div>
-        <nav className="nav-menu">
-          <a className="nav-item" href="#settings"><Settings2 size={18} /> Settings</a>
-          <a className="nav-item" href="#help"><CircleHelp size={18} /> Help & support</a>
-        </nav>
-
         <div className="sidebar-spacer" />
         <div className="upgrade-card">
           <div className="upgrade-icon"><Sparkles size={17} /></div>
@@ -1422,7 +1659,26 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 
       <main className="main-area" id="dashboard">
         <header className="topbar">
-          <div className="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div>
+                    <div className="breadcrumb">
+            Workspace <span>/</span>{" "}
+            <strong>
+              {activeView === "overview"
+                ? activeSection === "assistant"
+                  ? "AI Assistant"
+                  : activeSection === "transactions"
+                    ? "Transactions"
+                    : activeSection === "payments"
+                      ? "Payments"
+                      : "Overview"
+                : activeView === "marketplace"
+                  ? "Marketplace"
+                  : activeView === "orders"
+                    ? "Orders"
+                    : activeView === "seller"
+                      ? "Seller Dashboard"
+                      : "Admin Review"}
+            </strong>
+          </div>
           <div className="topbar-actions">
             <div className="sandbox-pill"><span /> SANDBOX MODE</div>
             <button className="icon-button" aria-label="Notifications"><Bell size={18} /><i /></button>
@@ -2446,6 +2702,122 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
               <div className="marketplace-chat-content">
                 <p className="marketplace-chat-bubble">{item.text}</p>
                 {item.role === "assistant" && <SemanticDetails semantic={item.semantic} />}
+
+                {item.role === "assistant" && item.paypalOfficialLinks ? (
+                  <section className="paypal-promo-panel" aria-label="Official PayPal resources">
+                    <div className="paypal-promo-heading">
+                      <strong>Explore PayPal</strong>
+                      <span>
+                        Official PayPal resources
+                        <span className="paypal-promo-country">{item.paypalCountryCode || "ZA"}</span>
+                      </span>
+                    </div>
+                    <p>
+                      Discover PayPal account and business services directly on PayPal.
+                      Availability and eligibility depend on your country.
+                    </p>
+                    <div className="paypal-promo-links">
+                      {([
+                        ["account", "Create a PayPal account"],
+                        ["business", "Open a PayPal Business account"],
+                        ["sign_in", "Sign in to PayPal"],
+                      ] as const).map(([key, label]) => {
+                        const url = item.paypalOfficialLinks?.[key];
+                        if (!url) return null;
+                        return (
+                          <button
+                            type="button"
+                            key={key}
+                            className="paypal-promo-link"
+                            onClick={() =>
+                              void openPayPalResource(
+                                key,
+                                url,
+                                item.paypalCountryCode || "ZA"
+                              )
+                            }
+                          >
+                            {label} <span aria-hidden="true">?</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <small className="paypal-promo-disclaimer">
+                      PayPilot AI is an independent platform. These links lead to PayPal;
+                      no special discount or partnership is implied.
+                    </small>
+                  </section>
+                ) : null}
+
+                {item.role === "assistant" && item.recommendedProductIds?.length ? (
+                  <div className="marketplace-recommendations">
+                    <p className="marketplace-recommendations-heading">
+                      Recommended marketplace listings
+                    </p>
+                    <div className="marketplace-recommendation-grid">
+                      {item.recommendedProductIds.map((productId) => {
+                        const product = products.find(
+                          (candidate) => candidate.id === productId
+                        );
+
+                        if (!product) return null;
+
+                        const cartQuantity =
+                          cartItems.find(
+                            (cartItem) => cartItem.product.id === product.id
+                          )?.quantity ?? 0;
+
+                        const stockLimitReached =
+                          product.inventory_quantity < 1 ||
+                          cartQuantity >= product.inventory_quantity;
+
+                        return (
+                          <article
+                            className="marketplace-recommendation-card"
+                            key={product.id}
+                          >
+                            {product.image_url ? (
+                              <img
+                                src={product.image_url}
+                                alt={product.name}
+                                onError={(event) => {
+                                  event.currentTarget.style.display = "none";
+                                }}
+                              />
+                            ) : (
+                              <div className="marketplace-recommendation-placeholder">
+                                <ShoppingBag size={23} />
+                              </div>
+                            )}
+
+                            <div className="marketplace-recommendation-body">
+                              <span>{product.category || "General"}</span>
+                              <strong>{product.name}</strong>
+                              <small>Sold by {product.seller_name}</small>
+                              <div className="marketplace-recommendation-price">
+                                <strong>
+                                  {formatMoney(product.price, product.currency)}
+                                </strong>
+                                <small>{product.inventory_quantity} available</small>
+                              </div>
+                              <button
+                                type="button"
+                                className="marketplace-add-to-cart"
+                                disabled={stockLimitReached}
+                                onClick={() => addToCart(product)}
+                              >
+                                <ShoppingCart size={15} />
+                                {stockLimitReached
+                                  ? "Stock limit reached"
+                                  : "Add to cart"}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           ))}
@@ -2489,6 +2861,265 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
     </section>
   )}
 
+  {activeView === "paypal-iq" && (
+    <section className="paypal-iq-view">
+      <div className="paypal-iq-hero">
+        <div>
+          <span className="paypal-iq-eyebrow">PAYPILOT AI LEARNING</span>
+          <h1>PayPal IQ</h1>
+          <p>Build your payment knowledge. Learn a fact, take the daily challenge, and track your progress.</p>
+        </div>
+        <div className="paypal-iq-hero-icon">
+          <BookOpen size={34} />
+        </div>
+      </div>
+
+      {paypalIQLoading && (
+        <div className="panel paypal-iq-message">Loading your PayPal IQ learning dashboard...</div>
+      )}
+
+      {paypalIQError && (
+        <div className="panel paypal-iq-error">
+          <p>{paypalIQError}</p>
+          <button type="button" onClick={() => setActiveView("overview")}>Return to dashboard</button>
+        </div>
+      )}
+
+      {!paypalIQLoading && !paypalIQError && (
+        <>
+          <div className="paypal-iq-stats">
+            <article className="paypal-iq-stat">
+              <Award size={21} />
+              <span>Total points</span>
+              <strong>{paypalIQProgress?.total_points ?? 0}</strong>
+            </article>
+            <article className="paypal-iq-stat">
+              <Flame size={21} />
+              <span>Current streak</span>
+              <strong>{paypalIQProgress?.current_streak ?? 0} days</strong>
+            </article>
+            <article className="paypal-iq-stat">
+              <CheckCircle2 size={21} />
+              <span>Quizzes completed</span>
+              <strong>{paypalIQProgress?.quizzes_completed ?? 0}</strong>
+            </article>
+            <article className="paypal-iq-stat">
+              <BookOpen size={21} />
+              <span>Facts viewed</span>
+              <strong>{paypalIQProgress?.facts_viewed ?? 0}</strong>
+            </article>
+          </div>
+
+          <section className="panel paypal-iq-daily">
+            <div className="paypal-iq-section-heading">
+              <div>
+                <span className="paypal-iq-eyebrow">TODAY'S LEARNING</span>
+                <h2>Daily PayPal fact</h2>
+              </div>
+              <span className="paypal-iq-points">+2 points</span>
+            </div>
+
+            {paypalIQDailyFact ? (
+              <article className="paypal-iq-fact-card">
+                <span className="paypal-iq-category">{paypalIQDailyFact.category}</span>
+                <h3>{paypalIQDailyFact.title}</h3>
+                <p>{paypalIQDailyFact.fact_text}</p>
+                {paypalIQDailyFact.explanation && (
+                  <p className="paypal-iq-explanation">{paypalIQDailyFact.explanation}</p>
+                )}
+                <div className="paypal-iq-source">
+                  <ShieldCheck size={15} />
+                  <span>
+                    {paypalIQDailyFact.source_title || "Verified source"}
+                    {paypalIQDailyFact.verified_at
+                      ? ` · Verified ${paypalIQDailyFact.verified_at.slice(0, 10)}`
+                      : ""}
+                  </span>
+                  {paypalIQDailyFact.source_url && (
+                    <a href={paypalIQDailyFact.source_url} target="_blank" rel="noreferrer">
+                      View source
+                    </a>
+                  )}
+                </div>
+              </article>
+            ) : (
+              <p>No published daily fact is available yet.</p>
+            )}
+          </section>
+
+          <section className="panel paypal-iq-quiz">
+            <div className="paypal-iq-section-heading">
+              <div>
+                <span className="paypal-iq-eyebrow">DAILY CHALLENGE</span>
+                <h2>Test your knowledge</h2>
+                <p>Answer the questions and receive feedback from the learning engine.</p>
+              </div>
+              <span className="paypal-iq-quiz-count">
+                {paypalIQQuestions.length} questions
+              </span>
+            </div>
+
+            {paypalIQQuestions.length === 0 ? (
+              <p>No quiz questions are available right now. Check back later.</p>
+            ) : (
+              <div className="paypal-iq-question-list">
+                {paypalIQQuestions.map((question, index) => {
+                  const result = paypalIQResults[question.id];
+                  const selected = paypalIQSelectedAnswers[question.id] || "";
+
+                  return (
+                    <article className="paypal-iq-question" key={question.id}>
+                      <div className="paypal-iq-question-meta">
+                        <span>QUESTION {index + 1}</span>
+                        <span>{question.difficulty}</span>
+                      </div>
+                      <h3>{question.question}</h3>
+                      <p className="paypal-iq-question-context">
+                        {question.fact_title} · {question.category}
+                      </p>
+
+                      <div className="paypal-iq-options">
+                        {question.options.map((option, optionIndex) => {
+                          const optionLetter = String.fromCharCode(65 + optionIndex);
+                          const isCorrect = result?.correct_option === optionLetter;
+                          const isSelected = selected === optionLetter;
+
+                          return (
+                            <button
+                              type="button"
+                              key={optionLetter}
+                              className={`paypal-iq-option${isSelected ? " selected" : ""}${result && isCorrect ? " correct" : ""}${result && isSelected && !result.is_correct ? " incorrect" : ""}`}
+                              disabled={Boolean(result)}
+                              onClick={() =>
+                                setPaypalIQSelectedAnswers((current) => ({
+                                  ...current,
+                                  [question.id]: optionLetter,
+                                }))
+                              }
+                            >
+                              <span>{optionLetter}</span>
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {!result ? (
+                        <button
+                          type="button"
+                          className="paypal-iq-submit"
+                          disabled={!selected}
+                          onClick={async () => {
+                            try {
+                              const response = await fetch(
+                                apiUrl("/api/paypal-iq/quiz/submit"),
+                                {
+                                  method: "POST",
+                                  headers: {
+                                    Authorization: `Bearer ${authToken}`,
+                                    "Content-Type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    question_id: question.id,
+                                    selected_option: selected,
+                                  }),
+                                }
+                              );
+
+                              const data = await response.json();
+
+                              if (!response.ok) {
+                                throw new Error(data.detail || "Could not submit your answer.");
+                              }
+
+                              setPaypalIQResults((current) => ({
+                                ...current,
+                                [question.id]: data as PayPalIQQuizResult,
+                              }));
+
+                              if (data.progress) {
+                                setPaypalIQProgress(data.progress);
+                              }
+                            } catch (error) {
+                              setPaypalIQError(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Could not submit your answer."
+                              );
+                            }
+                          }}
+                        >
+                          Submit answer
+                        </button>
+                      ) : (
+                        <div className={`paypal-iq-feedback ${result.is_correct ? "success" : "retry"}`}>
+                          <strong>
+                            {result.is_correct ? "Correct answer!" : "Not quite. Keep learning!"}
+                          </strong>
+                          <p>{result.explanation}</p>
+                          <span>Points earned: {result.points_awarded}</span>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="panel paypal-iq-library">
+            <div className="paypal-iq-section-heading">
+              <div>
+                <span className="paypal-iq-eyebrow">KNOWLEDGE LIBRARY</span>
+                <h2>Explore PayPal facts</h2>
+              </div>
+              <span>{paypalIQFacts.length} published facts</span>
+            </div>
+
+            <div className="paypal-iq-categories">
+              <button
+                type="button"
+                className={paypalIQSelectedCategory === "ALL" ? "active" : ""}
+                onClick={() => setPaypalIQSelectedCategory("ALL")}
+              >
+                All topics
+              </button>
+              {paypalIQCategories.map((category) => (
+                <button
+                  type="button"
+                  key={category}
+                  className={paypalIQSelectedCategory === category ? "active" : ""}
+                  onClick={() => setPaypalIQSelectedCategory(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+
+            <div className="paypal-iq-fact-grid">
+              {paypalIQFacts
+                .filter((fact) =>
+                  paypalIQSelectedCategory === "ALL" ||
+                  fact.category === paypalIQSelectedCategory
+                )
+                .map((fact) => (
+                  <article className="paypal-iq-library-card" key={fact.id}>
+                    <span className="paypal-iq-category">{fact.category}</span>
+                    <h3>{fact.title}</h3>
+                    <p>{fact.fact_text}</p>
+                    {fact.source_url && (
+                      <a href={fact.source_url} target="_blank" rel="noreferrer">
+                        <ShieldCheck size={14} /> {fact.source_title || "View source"}
+                      </a>
+                    )}
+                  </article>
+                ))}
+            </div>
+          </section>
+        </>
+      )}
+    </section>
+  )}
   <div hidden={activeView !== "overview"}>
   {paymentOpen && (
             <section className="panel payment-form-panel" id="new-payment">
@@ -2672,6 +3303,14 @@ const [paymentNoticeType, setPaymentNoticeType] = useState<"success" | "error">(
 }
 
 export default App;
+
+
+
+
+
+
+
+
 
 
 

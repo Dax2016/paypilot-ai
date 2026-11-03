@@ -6,8 +6,10 @@ from fastapi import Request
 from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac, sha256
 import hmac
+import json
 import secrets
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from typing import Literal
 
@@ -65,6 +67,21 @@ def init_database():
                 updated_at TEXT NOT NULL
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_promo_clicks (
+                id TEXT PRIMARY KEY,
+                resource_key TEXT NOT NULL
+                    CHECK (resource_key IN ('account', 'business', 'sign_in')),
+                country_code TEXT NOT NULL,
+                session_id TEXT,
+                clicked_at TEXT NOT NULL
+            )
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_promo_clicks_date
+            ON paypal_promo_clicks(clicked_at)
+        """)
+
         connection.execute("""
             CREATE TABLE IF NOT EXISTS sellers (
                 id TEXT PRIMARY KEY,
@@ -138,6 +155,22 @@ def init_database():
             )
         """)
 
+        item_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(marketplace_order_items)"
+            ).fetchall()
+        }
+        if "seller_id" not in item_columns:
+            connection.execute(
+                "ALTER TABLE marketplace_order_items ADD COLUMN seller_id TEXT"
+            )
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_marketplace_order_items_seller
+            ON marketplace_order_items(seller_id)
+        """)
+
         connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_marketplace_orders_status
             ON marketplace_orders(status)
@@ -202,6 +235,180 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_customer_sessions_expiry
             ON customer_sessions(expires_at)
         """)
+
+
+        # ============================================================
+        # PAYPAL IQ ? KNOWLEDGE AND LEARNING DATABASE
+        # ============================================================
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_facts (
+                id TEXT PRIMARY KEY,
+                fact_code TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                fact_text TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                category TEXT NOT NULL,
+                country_scope TEXT NOT NULL
+                    CHECK (country_scope IN ('GLOBAL', 'COUNTRY')),
+                country_code TEXT,
+                source_url TEXT NOT NULL,
+                source_title TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_excerpt TEXT,
+                difficulty TEXT NOT NULL DEFAULT 'BEGINNER'
+                    CHECK (difficulty IN ('BEGINNER', 'INTERMEDIATE', 'ADVANCED')),
+                status TEXT NOT NULL DEFAULT 'DRAFT'
+                    CHECK (status IN ('DRAFT', 'REVIEW', 'PUBLISHED', 'ARCHIVED')),
+                verified_at TEXT,
+                review_at TEXT,
+                fact_version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (country_scope = 'GLOBAL' AND country_code IS NULL)
+                    OR
+                    (country_scope = 'COUNTRY' AND country_code IS NOT NULL)
+                )
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_facts_status_category
+            ON paypal_iq_facts(status, category)
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_facts_country
+            ON paypal_iq_facts(country_scope, country_code, status)
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_facts_review
+            ON paypal_iq_facts(review_at)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_questions (
+                id TEXT PRIMARY KEY,
+                fact_id TEXT NOT NULL,
+                question TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                correct_option TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                difficulty TEXT NOT NULL DEFAULT 'BEGINNER'
+                    CHECK (difficulty IN ('BEGINNER', 'INTERMEDIATE', 'ADVANCED')),
+                status TEXT NOT NULL DEFAULT 'DRAFT'
+                    CHECK (status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (fact_id) REFERENCES paypal_iq_facts(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_questions_fact_status
+            ON paypal_iq_questions(fact_id, status)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_daily_exposures (
+                id TEXT PRIMARY KEY,
+                customer_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                exposure_date TEXT NOT NULL,
+                viewed_at TEXT NOT NULL,
+                UNIQUE(customer_id, exposure_date),
+                FOREIGN KEY (customer_id) REFERENCES customer_accounts(id),
+                FOREIGN KEY (fact_id) REFERENCES paypal_iq_facts(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_exposures_customer
+            ON paypal_iq_daily_exposures(customer_id, exposure_date)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_quiz_attempts (
+                id TEXT PRIMARY KEY,
+                customer_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                attempt_date TEXT NOT NULL,
+                selected_option TEXT NOT NULL,
+                is_correct INTEGER NOT NULL CHECK (is_correct IN (0, 1)),
+                points_awarded INTEGER NOT NULL DEFAULT 0
+                    CHECK (points_awarded >= 0),
+                submitted_at TEXT NOT NULL,
+                UNIQUE(customer_id, question_id, attempt_date),
+                FOREIGN KEY (customer_id) REFERENCES customer_accounts(id),
+                FOREIGN KEY (question_id) REFERENCES paypal_iq_questions(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_attempts_customer
+            ON paypal_iq_quiz_attempts(customer_id, submitted_at)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_user_progress (
+                customer_id TEXT PRIMARY KEY,
+                total_points INTEGER NOT NULL DEFAULT 0
+                    CHECK (total_points >= 0),
+                quizzes_completed INTEGER NOT NULL DEFAULT 0
+                    CHECK (quizzes_completed >= 0),
+                facts_viewed INTEGER NOT NULL DEFAULT 0
+                    CHECK (facts_viewed >= 0),
+                current_streak INTEGER NOT NULL DEFAULT 0
+                    CHECK (current_streak >= 0),
+                longest_streak INTEGER NOT NULL DEFAULT 0
+                    CHECK (longest_streak >= 0),
+                last_activity_date TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customer_accounts(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_question_reviews (
+                id TEXT PRIMARY KEY,
+                question_id TEXT NOT NULL,
+                reviewer_id TEXT NOT NULL,
+                review_status TEXT NOT NULL
+                    CHECK (review_status IN ('APPROVED', 'REJECTED')),
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (question_id)
+                    REFERENCES paypal_iq_questions(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_question_reviews_latest
+            ON paypal_iq_question_reviews(question_id, created_at)
+        """)
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS paypal_iq_fact_reviews (
+                id TEXT PRIMARY KEY,
+                fact_id TEXT NOT NULL,
+                reviewer_id TEXT,
+                review_status TEXT NOT NULL
+                    CHECK (review_status IN ('APPROVED', 'REJECTED', 'NEEDS_UPDATE')),
+                notes TEXT,
+                source_checked_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (fact_id) REFERENCES paypal_iq_facts(id),
+                FOREIGN KEY (reviewer_id) REFERENCES customer_accounts(id)
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paypal_iq_reviews_fact
+            ON paypal_iq_fact_reviews(fact_id, created_at)
+        """)
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -395,6 +602,129 @@ class AssistantRequest(BaseModel):
         return normalized
 
 
+class PayPalPromoClickRequest(BaseModel):
+    resource_key: Literal["account", "business", "sign_in"]
+    country_code: str = Field(default="ZA", min_length=2, max_length=2)
+    session_id: str | None = Field(default=None, max_length=80)
+
+    @field_validator("country_code")
+    @classmethod
+    def validate_promo_country_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized.isalpha() or len(normalized) != 2:
+            raise ValueError("country_code must be a two-letter country code.")
+        return normalized
+
+
+@app.post("/api/paypal/promo-clicks", status_code=201)
+def record_paypal_promo_click(request: PayPalPromoClickRequest):
+    """Record an interaction with an approved official PayPal resource."""
+    session_id = request.session_id.strip() if request.session_id else None
+
+    with database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO paypal_promo_clicks (
+                id, resource_key, country_code, session_id, clicked_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                secrets.token_hex(16),
+                request.resource_key,
+                request.country_code,
+                session_id or None,
+                utc_now(),
+            ),
+        )
+
+    return {"status": "recorded", "resource_key": request.resource_key}
+
+
+class PayPalIQFactCreateRequest(BaseModel):
+    fact_code: str = Field(min_length=3, max_length=80)
+    title: str = Field(min_length=5, max_length=180)
+    fact_text: str = Field(min_length=10, max_length=2000)
+    explanation: str = Field(min_length=10, max_length=3000)
+    category: str = Field(min_length=2, max_length=80)
+    country_scope: Literal["GLOBAL", "COUNTRY"]
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    source_url: str = Field(min_length=10, max_length=1000)
+    source_title: str = Field(min_length=3, max_length=250)
+    source_type: str = Field(min_length=2, max_length=50)
+    source_excerpt: str | None = Field(default=None, max_length=2000)
+    difficulty: Literal["BEGINNER", "INTERMEDIATE", "ADVANCED"] = "BEGINNER"
+    review_at: str | None = None
+
+    @field_validator("fact_code")
+    @classmethod
+    def normalize_fact_code(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized.replace("-", "").replace("_", "").isalnum():
+            raise ValueError("fact_code may contain only letters, numbers, hyphens and underscores.")
+        return normalized
+
+    @field_validator("country_code")
+    @classmethod
+    def normalize_fact_country(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if len(normalized) != 2 or not normalized.isalpha():
+            raise ValueError("country_code must be a two-letter country code.")
+        return normalized
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith("https://"):
+            raise ValueError("PayPal IQ sources must use HTTPS.")
+        return normalized
+
+    @field_validator("category", "source_title", "source_type")
+    @classmethod
+    def trim_fact_metadata(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("This field cannot be blank.")
+        return normalized
+
+
+class PayPalIQQuestionCreateRequest(BaseModel):
+    fact_id: str = Field(min_length=1, max_length=80)
+    question: str = Field(min_length=10, max_length=1000)
+    options: list[str] = Field(min_length=2, max_length=6)
+    correct_option: str = Field(min_length=1, max_length=10)
+    explanation: str = Field(min_length=10, max_length=2000)
+    difficulty: Literal["BEGINNER", "INTERMEDIATE", "ADVANCED"] = "BEGINNER"
+
+    @field_validator("options")
+    @classmethod
+    def validate_question_options(cls, value: list[str]) -> list[str]:
+        normalized = [option.strip() for option in value]
+        if any(not option for option in normalized):
+            raise ValueError("Quiz options cannot be blank.")
+        if len({option.casefold() for option in normalized}) != len(normalized):
+            raise ValueError("Quiz options must be unique.")
+        if any(len(option) > 300 for option in normalized):
+            raise ValueError("Each quiz option must be 300 characters or fewer.")
+        return normalized
+
+    @field_validator("correct_option")
+    @classmethod
+    def normalize_correct_option(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class PayPalIQQuizSubmitRequest(BaseModel):
+    question_id: str = Field(min_length=1, max_length=80)
+    selected_option: str = Field(min_length=1, max_length=10)
+
+    @field_validator("selected_option")
+    @classmethod
+    def normalize_selected_option(cls, value: str) -> str:
+        return value.strip().upper()
+
 class PaymentIntentRequest(BaseModel):
     recipient: str = Field(min_length=1, max_length=120)
     amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
@@ -558,6 +888,506 @@ def require_admin_token(token: str | None):
 
 
 
+@app.post("/api/admin/paypal-iq/facts", status_code=201)
+def create_paypal_iq_fact(
+    request: PayPalIQFactCreateRequest,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Create an unpublished PayPal IQ fact for administrator review."""
+    require_admin_token(admin_token)
+
+    if request.country_scope == "GLOBAL" and request.country_code is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Global facts must not specify a country_code.",
+        )
+
+    if request.country_scope == "COUNTRY" and not request.country_code:
+        raise HTTPException(
+            status_code=422,
+            detail="Country-specific facts require a country_code.",
+        )
+
+    from urllib.parse import urlparse
+
+    parsed_source = urlparse(request.source_url)
+    if (
+        parsed_source.scheme != "https"
+        or not parsed_source.netloc
+        or not parsed_source.hostname
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A valid HTTPS source URL is required.",
+        )
+
+    fact_id = secrets.token_hex(16)
+    now = utc_now()
+
+    try:
+        with database_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO paypal_iq_facts (
+                    id, fact_code, title, fact_text, explanation,
+                    category, country_scope, country_code,
+                    source_url, source_title, source_type, source_excerpt,
+                    difficulty, status, verified_at, review_at,
+                    fact_version, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT',
+                        NULL, NULL, 1, ?, ?)
+                """,
+                (
+                    fact_id,
+                    request.fact_code,
+                    request.title.strip(),
+                    request.fact_text.strip(),
+                    request.explanation.strip(),
+                    request.category.strip(),
+                    request.country_scope,
+                    request.country_code,
+                    request.source_url,
+                    request.source_title.strip(),
+                    request.source_type.strip(),
+                    request.source_excerpt.strip()
+                    if request.source_excerpt else None,
+                    request.difficulty,
+                    now,
+                    now,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        if "fact_code" in str(exc).lower() or "unique" in str(exc).lower():
+            raise HTTPException(
+                status_code=409,
+                detail="A fact with this fact_code already exists.",
+            ) from exc
+        raise
+
+    return {
+        "status": "created",
+        "fact_id": fact_id,
+        "fact_code": request.fact_code,
+        "fact_status": "DRAFT",
+        "message": "Fact created and awaiting source review.",
+    }
+
+class PayPalIQFactReviewRequest(BaseModel):
+    review_status: Literal["APPROVED", "REJECTED", "NEEDS_UPDATE"]
+    notes: str | None = Field(default=None, max_length=2000)
+    review_at: str | None = None
+
+
+@app.post("/api/admin/paypal-iq/facts/{fact_id}/review")
+def review_paypal_iq_fact(
+    fact_id: str,
+    request: PayPalIQFactReviewRequest,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Record an administrator's source review without publishing the fact."""
+    require_admin_token(admin_token)
+
+    now = utc_now()
+
+    with database_connection() as connection:
+        fact = connection.execute(
+            "SELECT id, status FROM paypal_iq_facts WHERE id = ?",
+            (fact_id,),
+        ).fetchone()
+
+        if fact is None:
+            raise HTTPException(status_code=404, detail="PayPal IQ fact not found.")
+
+        if fact["status"] in ("PUBLISHED", "ARCHIVED"):
+            raise HTTPException(
+                status_code=409,
+                detail="Published or archived facts cannot be reviewed through this endpoint.",
+            )
+
+        review_id = secrets.token_hex(16)
+
+        connection.execute(
+            """
+            INSERT INTO paypal_iq_fact_reviews (
+                id, fact_id, reviewer_id, review_status,
+                notes, source_checked_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review_id,
+                fact_id,
+                "admin",
+                request.review_status,
+                request.notes.strip() if request.notes else None,
+                now,
+                now,
+            ),
+        )
+
+        if request.review_status == "APPROVED":
+            review_at = request.review_at or (
+                datetime.now(timezone.utc) + timedelta(days=90)
+            ).isoformat()
+
+            connection.execute(
+                """
+                UPDATE paypal_iq_facts
+                SET status = 'REVIEW',
+                    verified_at = ?,
+                    review_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, review_at, now, fact_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE paypal_iq_facts
+                SET status = 'DRAFT',
+                    verified_at = NULL,
+                    review_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, fact_id),
+            )
+
+    return {
+        "status": "review_recorded",
+        "fact_id": fact_id,
+        "review_id": review_id,
+        "review_status": request.review_status,
+        "fact_status": "REVIEW" if request.review_status == "APPROVED" else "DRAFT",
+        "message": (
+            "Fact approved for publishing review."
+            if request.review_status == "APPROVED"
+            else "Fact remains unpublished and requires attention."
+        ),
+    }
+
+@app.post("/api/admin/paypal-iq/facts/{fact_id}/publish")
+def publish_paypal_iq_fact(
+    fact_id: str,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Publish a fact only after an explicit approved source review."""
+    require_admin_token(admin_token)
+
+    from urllib.parse import urlparse
+
+    with database_connection() as connection:
+        fact = connection.execute(
+            """
+            SELECT id, status, source_url, source_title, source_type,
+                   verified_at, review_at
+            FROM paypal_iq_facts
+            WHERE id = ?
+            """,
+            (fact_id,),
+        ).fetchone()
+
+        if fact is None:
+            raise HTTPException(status_code=404, detail="PayPal IQ fact not found.")
+
+        if fact["status"] != "REVIEW":
+            raise HTTPException(
+                status_code=409,
+                detail="Only facts in REVIEW status can be published.",
+            )
+
+        latest_review = connection.execute(
+            """
+            SELECT review_status
+            FROM paypal_iq_fact_reviews
+            WHERE fact_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (fact_id,),
+        ).fetchone()
+
+        if latest_review is None or latest_review["review_status"] != "APPROVED":
+            raise HTTPException(
+                status_code=409,
+                detail="The latest fact review must be APPROVED before publishing.",
+            )
+
+        if not fact["verified_at"] or not fact["review_at"]:
+            raise HTTPException(
+                status_code=409,
+                detail="The fact must have verification and review dates.",
+            )
+
+        parsed_source = urlparse(fact["source_url"] or "")
+        if (
+            parsed_source.scheme != "https"
+            or not parsed_source.netloc
+            or not parsed_source.hostname
+            or not fact["source_title"]
+            or not fact["source_type"]
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="The fact must have complete, valid HTTPS source metadata.",
+            )
+
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE paypal_iq_facts
+            SET status = 'PUBLISHED',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, fact_id),
+        )
+
+    return {
+        "status": "published",
+        "fact_id": fact_id,
+        "fact_status": "PUBLISHED",
+        "message": "Fact published and eligible for customer-facing PayPal IQ experiences.",
+    }
+
+@app.post("/api/admin/paypal-iq/questions", status_code=201)
+def create_paypal_iq_question(
+    request: PayPalIQQuestionCreateRequest,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Create an unpublished quiz question for a published PayPal IQ fact."""
+    require_admin_token(admin_token)
+
+    if len(request.options) < 2 or len(request.options) > 6:
+        raise HTTPException(
+            status_code=422,
+            detail="Quiz questions require between 2 and 6 answer options.",
+        )
+
+    valid_labels = [
+        chr(65 + index) for index in range(len(request.options))
+    ]
+
+    if request.correct_option not in valid_labels:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "correct_option must match an available option label: "
+                + ", ".join(valid_labels)
+            ),
+        )
+
+    now = utc_now()
+    question_id = secrets.token_hex(16)
+
+    with database_connection() as connection:
+        fact = connection.execute(
+            """
+            SELECT id, status
+            FROM paypal_iq_facts
+            WHERE id = ?
+            """,
+            (request.fact_id,),
+        ).fetchone()
+
+        if fact is None:
+            raise HTTPException(
+                status_code=404,
+                detail="PayPal IQ fact not found.",
+            )
+
+        if fact["status"] != "PUBLISHED":
+            raise HTTPException(
+                status_code=409,
+                detail="Quiz questions can only be created for published facts.",
+            )
+
+        connection.execute(
+            """
+            INSERT INTO paypal_iq_questions (
+                id, fact_id, question, options_json,
+                correct_option, explanation, difficulty,
+                status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)
+            """,
+            (
+                question_id,
+                request.fact_id,
+                request.question.strip(),
+                json.dumps(request.options),
+                request.correct_option,
+                request.explanation.strip(),
+                request.difficulty,
+                now,
+                now,
+            ),
+        )
+
+    return {
+        "status": "created",
+        "question_id": question_id,
+        "fact_id": request.fact_id,
+        "question_status": "DRAFT",
+        "message": "Quiz question created and awaiting review.",
+    }
+
+class PayPalIQQuestionReviewRequest(BaseModel):
+    review_status: Literal["APPROVED", "REJECTED"]
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+@app.post("/api/admin/paypal-iq/questions/{question_id}/review")
+def review_paypal_iq_question(
+    question_id: str,
+    request: PayPalIQQuestionReviewRequest,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Record an approval or rejection without changing the question status."""
+    require_admin_token(admin_token)
+
+    now = utc_now()
+
+    with database_connection() as connection:
+        question = connection.execute(
+            """
+            SELECT q.id, q.status, f.status AS fact_status
+            FROM paypal_iq_questions q
+            JOIN paypal_iq_facts f ON f.id = q.fact_id
+            WHERE q.id = ?
+            """,
+            (question_id,),
+        ).fetchone()
+
+        if question is None:
+            raise HTTPException(
+                status_code=404,
+                detail="PayPal IQ question not found.",
+            )
+
+        if question["status"] == "PUBLISHED":
+            raise HTTPException(
+                status_code=409,
+                detail="Published questions cannot be reviewed through this endpoint.",
+            )
+
+        if question["fact_status"] != "PUBLISHED":
+            raise HTTPException(
+                status_code=409,
+                detail="The question's associated fact must be published first.",
+            )
+
+        connection.execute(
+            """
+            INSERT INTO paypal_iq_question_reviews (
+                id, question_id, reviewer_id, review_status, notes, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                secrets.token_hex(16),
+                question_id,
+                "admin",
+                request.review_status,
+                request.notes,
+                now,
+            ),
+        )
+
+    return {
+        "status": "review_recorded",
+        "question_id": question_id,
+        "review_status": request.review_status,
+        "question_status": "DRAFT",
+        "message": (
+            "Question approved and is ready for the publishing step."
+            if request.review_status == "APPROVED"
+            else "Question rejected and remains a draft."
+        ),
+    }
+
+
+@app.post("/api/admin/paypal-iq/questions/{question_id}/publish")
+def publish_paypal_iq_question(
+    question_id: str,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Publish a question only after its latest review approves it."""
+    require_admin_token(admin_token)
+
+    now = utc_now()
+
+    with database_connection() as connection:
+        question = connection.execute(
+            """
+            SELECT q.id, q.status, f.status AS fact_status
+            FROM paypal_iq_questions q
+            JOIN paypal_iq_facts f ON f.id = q.fact_id
+            WHERE q.id = ?
+            """,
+            (question_id,),
+        ).fetchone()
+
+        if question is None:
+            raise HTTPException(
+                status_code=404,
+                detail="PayPal IQ question not found.",
+            )
+
+        if question["status"] == "PUBLISHED":
+            raise HTTPException(
+                status_code=409,
+                detail="This question is already published.",
+            )
+
+        if question["status"] != "DRAFT":
+            raise HTTPException(
+                status_code=409,
+                detail="Only draft questions can be published.",
+            )
+
+        if question["fact_status"] != "PUBLISHED":
+            raise HTTPException(
+                status_code=409,
+                detail="The question's associated fact must be published first.",
+            )
+
+        latest_review = connection.execute(
+            """
+            SELECT review_status
+            FROM paypal_iq_question_reviews
+            WHERE question_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (question_id,),
+        ).fetchone()
+
+        if latest_review is None or latest_review["review_status"] != "APPROVED":
+            raise HTTPException(
+                status_code=409,
+                detail="The latest question review must be APPROVED before publishing.",
+            )
+
+        connection.execute(
+            """
+            UPDATE paypal_iq_questions
+            SET status = 'PUBLISHED', updated_at = ?
+            WHERE id = ? AND status = 'DRAFT'
+            """,
+            (now, question_id),
+        )
+
+    return {
+        "status": "published",
+        "question_id": question_id,
+        "question_status": "PUBLISHED",
+        "message": "PayPal IQ question published successfully.",
+    }
+
+
 class CustomerSignupRequest(BaseModel):
     email: str = Field(min_length=5, max_length=254)
     password: str = Field(min_length=10, max_length=128)
@@ -572,6 +1402,7 @@ def _customer_password_hash(password: str, salt_hex: str) -> str:
     salt = bytes.fromhex(salt_hex)
     derived = pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 600_000)
     return derived.hex()
+
 
 
 def _create_customer_session(account_id: str, connection=None) -> dict:
@@ -608,6 +1439,7 @@ def _create_customer_session(account_id: str, connection=None) -> dict:
     }
 
 
+
 def _get_authenticated_customer(authorization: str | None) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authentication required.")
@@ -639,8 +1471,11 @@ def _get_authenticated_customer(authorization: str | None) -> dict:
     if expires <= datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Invalid or expired session.")
 
-    return {"id": row["id"], "email": row["email"],
-            "created_at": row["created_at"]}
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "created_at": row["created_at"],
+    }
 
 
 @app.post("/api/auth/signup", status_code=201)
@@ -1577,6 +2412,7 @@ def shopping_assistant(request: AssistantRequest):
                 next_action="Try again later or check the marketplace catalogue.",
             ),
             "products": [],
+            "recommended_product_ids": [],
             "country_code": offer_context["country_code"],
             "paypal_offer_context": offer_context,
             "payment_created": False,
@@ -1613,7 +2449,14 @@ def shopping_assistant(request: AssistantRequest):
                         "Explain that checkout is handled separately by PayPal Sandbox in "
                         "this prototype. Never claim a payment was made, create an order, "
                         "capture payment, or ask the user to provide card details in chat. "
-                        "Keep the reply clear and concise."
+                        "Return a JSON object with exactly two fields: "
+                        '"reply" and "recommended_product_ids". '
+                        '"reply" must contain the concise, shopper-friendly answer. '
+                        '"recommended_product_ids" must be an array containing at most '
+                        "four product IDs selected only from the supplied authoritative "
+                        "catalogue. Recommend only products relevant to the shopper request. "
+                        "Use an empty array when no product is a suitable match. "
+                        "Never invent or modify product IDs. Do not include Markdown fences."
                     ),
                 },
                 {
@@ -1633,9 +2476,55 @@ def shopping_assistant(request: AssistantRequest):
             temperature=0.2,
             max_tokens=600,
         )
-        reply = completion.choices[0].message.content
-        if not reply or not reply.strip():
+        raw_content = completion.choices[0].message.content
+
+        if not raw_content or not raw_content.strip():
             raise RuntimeError("The AI returned an empty response.")
+
+        # Preserve compatibility with existing plain-text AI responses.
+        reply = raw_content.strip()
+        recommended_product_ids = []
+
+        try:
+            parsed_response = json.loads(raw_content)
+
+            if isinstance(parsed_response, dict):
+                structured_reply = parsed_response.get("reply")
+                raw_recommendations = parsed_response.get(
+                    "recommended_product_ids",
+                    [],
+                )
+
+                if (
+                    isinstance(structured_reply, str)
+                    and structured_reply.strip()
+                ):
+                    reply = structured_reply.strip()
+
+                    allowed_product_ids = {
+                        str(product["id"])
+                        for product in catalogue
+                    }
+
+                    if isinstance(raw_recommendations, list):
+                        seen_ids = set()
+
+                        for product_id in raw_recommendations:
+                            if not isinstance(product_id, str):
+                                continue
+
+                            if (
+                                product_id in allowed_product_ids
+                                and product_id not in seen_ids
+                            ):
+                                recommended_product_ids.append(product_id)
+                                seen_ids.add(product_id)
+
+                            if len(recommended_product_ids) >= 4:
+                                break
+
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
     except Exception:
         # Do not expose API keys, provider diagnostics, or internal errors to shoppers.
         raise HTTPException(
@@ -1648,10 +2537,11 @@ def shopping_assistant(request: AssistantRequest):
 
     return {
         "status": "answered_from_catalogue",
-        "reply": reply.strip(),
+        "reply": reply,
+        "recommended_product_ids": recommended_product_ids,
         "semantic_response": _build_semantic_response(
             "product_discovery",
-            reply.strip(),
+            reply,
             key_points=[f"Available catalogue products: {len(catalogue)}"],
             evidence=[{
                 "source": "active, in-stock marketplace catalogue",
@@ -1942,7 +2832,7 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
     with database_connection() as connection:
         rows = connection.execute(
             f"""
-            SELECT p.id, p.name, p.description, p.price_minor,
+            SELECT p.id, p.seller_id, p.name, p.description, p.price_minor,
                    p.currency, p.inventory_quantity
             FROM products p
             JOIN sellers s ON s.id = p.seller_id
@@ -1980,6 +2870,7 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
         total_minor += line_total
         item_snapshots.append({
             "product_id": product["id"],
+            "seller_id": product["seller_id"],
             "product_name": product["name"],
             "unit_price_minor": product["price_minor"],
             "quantity": line.quantity,
@@ -2144,14 +3035,15 @@ async def create_marketplace_order(request: MarketplaceOrderRequest):
             connection.execute(
                 """
                 INSERT INTO marketplace_order_items (
-                    id, order_id, product_id, product_name,
+                    id, order_id, product_id, seller_id, product_name,
                     unit_price_minor, quantity, line_total_minor
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()), local_order_id, item["product_id"],
-                    item["product_name"], item["unit_price_minor"],
-                    item["quantity"], item["line_total_minor"],
+                    item["seller_id"], item["product_name"],
+                    item["unit_price_minor"], item["quantity"],
+                    item["line_total_minor"],
                 ),
             )
 
@@ -2589,5 +3481,498 @@ def list_marketplace_orders(
     return {"orders": results, "count": len(results)}
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+def paypal_iq_local_date():
+    """Return the current calendar date in South Africa."""
+    return datetime.now(ZoneInfo("Africa/Johannesburg")).date().isoformat()
+
+
+
+# ---------------------------------------------------------------------------
+# PayPal IQ — authenticated customer API
+# ---------------------------------------------------------------------------
+
+def _paypal_iq_progress(connection, customer_id):
+    row = connection.execute(
+        "SELECT * FROM paypal_iq_user_progress WHERE customer_id = ?",
+        (customer_id,),
+    ).fetchone()
+    if row:
+        return dict(row)
+    return {
+        "customer_id": customer_id,
+        "total_points": 0,
+        "quizzes_completed": 0,
+        "facts_viewed": 0,
+        "current_streak": 0,
+        "longest_streak": 0,
+        "last_activity_date": None,
+        "updated_at": None,
+    }
+
+
+def _paypal_iq_record_activity(
+    connection, customer_id, today, points=0, fact_viewed=False
+):
+    from datetime import date, timedelta
+
+    row = connection.execute(
+        "SELECT * FROM paypal_iq_user_progress WHERE customer_id = ?",
+        (customer_id,),
+    ).fetchone()
+
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if row is None:
+        streak = 1
+        connection.execute(
+            """
+            INSERT INTO paypal_iq_user_progress (
+                customer_id, total_points, facts_viewed,
+                current_streak, longest_streak,
+                last_activity_date, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (customer_id, points, int(fact_viewed), streak, streak, today, now),
+        )
+        return
+
+    streak = row["current_streak"]
+    if row["last_activity_date"] != today:
+        streak = streak + 1 if row["last_activity_date"] == yesterday else 1
+
+    connection.execute(
+        """
+        UPDATE paypal_iq_user_progress
+        SET total_points = total_points + ?,
+            facts_viewed = facts_viewed + ?,
+            current_streak = ?,
+            longest_streak = MAX(longest_streak, ?),
+            last_activity_date = ?,
+            updated_at = ?
+        WHERE customer_id = ?
+        """,
+        (points, int(fact_viewed), streak, streak, today, now, customer_id),
+    )
+
+
+_PAYPAL_IQ_ELIGIBLE = """
+    f.status = 'PUBLISHED'
+    AND (
+        f.country_scope = 'GLOBAL'
+        OR (f.country_scope = 'COUNTRY' AND f.country_code = 'ZA')
+    )
+"""
+
+
+def _paypal_iq_fact_dict(row):
+    return {
+        "id": row["id"],
+        "fact_code": row["fact_code"],
+        "title": row["title"],
+        "fact_text": row["fact_text"],
+        "explanation": row["explanation"],
+        "category": row["category"],
+        "country_scope": row["country_scope"],
+        "country_code": row["country_code"],
+        "source_url": row["source_url"],
+        "source_title": row["source_title"],
+        "source_type": row["source_type"],
+        "source_excerpt": row["source_excerpt"],
+        "difficulty": row["difficulty"],
+        "verified_at": row["verified_at"],
+        "review_at": row["review_at"],
+        "fact_version": row["fact_version"],
+    }
+
+
+@app.get("/api/paypal-iq/daily")
+def paypal_iq_daily(authorization: str | None = Header(default=None)):
+    customer = _get_authenticated_customer(authorization)
+    customer_id = customer["id"]
+    today = paypal_iq_local_date()
+
+    with database_connection() as connection:
+        exposure = connection.execute(
+            """
+            SELECT f.*
+            FROM paypal_iq_daily_exposures e
+            JOIN paypal_iq_facts f ON f.id = e.fact_id
+            WHERE e.customer_id = ? AND e.exposure_date = ?
+            """,
+            (customer_id, today),
+        ).fetchone()
+
+        if exposure is None:
+            fact = connection.execute(
+                f"""
+                SELECT f.* FROM paypal_iq_facts f
+                WHERE {_PAYPAL_IQ_ELIGIBLE}
+                AND NOT EXISTS (
+                    SELECT 1 FROM paypal_iq_daily_exposures e
+                    WHERE e.customer_id = ? AND e.fact_id = f.id
+                )
+                ORDER BY RANDOM() LIMIT 1
+                """,
+                (customer_id,),
+            ).fetchone()
+
+            if fact is None:
+                fact = connection.execute(
+                    f"SELECT f.* FROM paypal_iq_facts f WHERE {_PAYPAL_IQ_ELIGIBLE} ORDER BY RANDOM() LIMIT 1"
+                ).fetchone()
+
+            if fact is None:
+                return {
+                    "fact": None,
+                    "message": "No published PayPal IQ facts are available yet.",
+                    "progress": _paypal_iq_progress(connection, customer_id),
+                }
+
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO paypal_iq_daily_exposures
+                    (id, customer_id, fact_id, exposure_date, viewed_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (secrets.token_hex(16), customer_id, fact["id"], today, now),
+            )
+            if cursor.rowcount:
+                _paypal_iq_record_activity(
+                    connection, customer_id, today, points=2, fact_viewed=True
+                )
+
+            exposure = connection.execute(
+                """
+                SELECT f.* FROM paypal_iq_daily_exposures e
+                JOIN paypal_iq_facts f ON f.id = e.fact_id
+                WHERE e.customer_id = ? AND e.exposure_date = ?
+                """,
+                (customer_id, today),
+            ).fetchone()
+
+        return {
+            "fact": _paypal_iq_fact_dict(exposure),
+            "points_awarded": 2 if exposure else 0,
+            "progress": _paypal_iq_progress(connection, customer_id),
+        }
+
+
+@app.get("/api/paypal-iq/facts")
+def paypal_iq_facts(
+    category: str | None = None,
+    difficulty: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    authorization: str | None = Header(default=None),
+):
+    _get_authenticated_customer(authorization)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    clauses = [_PAYPAL_IQ_ELIGIBLE]
+    params = []
+
+    if category:
+        clauses.append("LOWER(f.category) = LOWER(?)")
+        params.append(category.strip())
+    if difficulty:
+        normalized = difficulty.strip().upper()
+        if normalized not in {"BEGINNER", "INTERMEDIATE", "ADVANCED"}:
+            raise HTTPException(status_code=400, detail="Invalid difficulty.")
+        clauses.append("f.difficulty = ?")
+        params.append(normalized)
+
+    where = " AND ".join(clauses)
+    with database_connection() as connection:
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM paypal_iq_facts f WHERE {where}", params
+        ).fetchone()[0]
+        rows = connection.execute(
+            f"""
+            SELECT f.* FROM paypal_iq_facts f
+            WHERE {where}
+            ORDER BY f.category, f.title
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+
+    return {
+        "items": [_paypal_iq_fact_dict(row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/api/paypal-iq/facts/{fact_id}")
+def paypal_iq_fact_detail(
+    fact_id: str, authorization: str | None = Header(default=None)
+):
+    _get_authenticated_customer(authorization)
+    with database_connection() as connection:
+        row = connection.execute(
+            f"SELECT f.* FROM paypal_iq_facts f WHERE f.id = ? AND {_PAYPAL_IQ_ELIGIBLE}",
+            (fact_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Fact not found.")
+    return {"fact": _paypal_iq_fact_dict(row)}
+
+
+@app.get("/api/paypal-iq/categories")
+def paypal_iq_categories(authorization: str | None = Header(default=None)):
+    _get_authenticated_customer(authorization)
+    with database_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT f.category FROM paypal_iq_facts f
+            WHERE {_PAYPAL_IQ_ELIGIBLE}
+            ORDER BY f.category
+            """
+        ).fetchall()
+    return {"categories": [row["category"] for row in rows]}
+
+
+@app.get("/api/paypal-iq/quiz")
+def paypal_iq_quiz(authorization: str | None = Header(default=None)):
+    customer = _get_authenticated_customer(authorization)
+    today = paypal_iq_local_date()
+
+    with database_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT q.id, q.fact_id, q.question, q.options_json,
+                   q.difficulty, f.title AS fact_title, f.category
+            FROM paypal_iq_questions q
+            JOIN paypal_iq_facts f ON f.id = q.fact_id
+            WHERE q.status = 'PUBLISHED'
+              AND {_PAYPAL_IQ_ELIGIBLE}
+              AND NOT EXISTS (
+                  SELECT 1 FROM paypal_iq_quiz_attempts a
+                  WHERE a.customer_id = ? AND a.question_id = q.id
+                    AND a.attempt_date = ?
+              )
+            ORDER BY RANDOM()
+            LIMIT 3
+            """,
+            (customer["id"], today),
+        ).fetchall()
+
+    return {
+        "questions": [
+            {
+                "id": row["id"],
+                "fact_id": row["fact_id"],
+                "question": row["question"],
+                "options": json.loads(row["options_json"]),
+                "difficulty": row["difficulty"],
+                "fact_title": row["fact_title"],
+                "category": row["category"],
+            }
+            for row in rows
+        ],
+        "available_count": len(rows),
+        "daily_question_limit": 3,
+    }
+
+
+@app.post("/api/paypal-iq/quiz/submit")
+def paypal_iq_quiz_submit(
+    payload: PayPalIQQuizSubmitRequest,
+    authorization: str | None = Header(default=None),
+):
+    customer = _get_authenticated_customer(authorization)
+    customer_id = customer["id"]
+    today = paypal_iq_local_date()
+
+    with database_connection() as connection:
+        row = connection.execute(
+            f"""
+            SELECT q.* FROM paypal_iq_questions q
+            JOIN paypal_iq_facts f ON f.id = q.fact_id
+            WHERE q.id = ? AND q.status = 'PUBLISHED'
+              AND {_PAYPAL_IQ_ELIGIBLE}
+            """,
+            (payload.question_id,),
+        ).fetchone()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="Question not found.")
+
+        options = json.loads(row["options_json"])
+        valid_labels = {
+            chr(ord("A") + index) for index in range(len(options))
+        }
+        stored_values = {
+            str(option).strip().upper() for option in options
+        }
+        if (
+            payload.selected_option not in valid_labels
+            and payload.selected_option not in stored_values
+        ):
+            raise HTTPException(status_code=400, detail="Invalid answer option.")
+
+        correct = payload.selected_option == row["correct_option"]
+        points = (
+            {"BEGINNER": 10, "INTERMEDIATE": 15, "ADVANCED": 20}.get(
+                row["difficulty"], 10
+            )
+            if correct else 0
+        )
+        now = datetime.now(timezone.utc).isoformat()
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO paypal_iq_quiz_attempts (
+                    id, customer_id, question_id, attempt_date,
+                    selected_option, is_correct, points_awarded, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    secrets.token_hex(16), customer_id, row["id"], today,
+                    payload.selected_option, int(correct), points, now,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=409,
+                detail="You have already answered this question today.",
+            )
+
+        _paypal_iq_record_activity(
+            connection, customer_id, today, points=points
+        )
+
+        completed_today = connection.execute(
+            """
+            SELECT COUNT(*) FROM paypal_iq_quiz_attempts
+            WHERE customer_id = ? AND attempt_date = ?
+            """,
+            (customer_id, today),
+        ).fetchone()[0]
+
+        if completed_today == 3:
+            connection.execute(
+                """
+                UPDATE paypal_iq_user_progress
+                SET quizzes_completed = quizzes_completed + 1
+                WHERE customer_id = ?
+                """,
+                (customer_id,),
+            )
+
+        return {
+            "question_id": row["id"],
+            "selected_option": payload.selected_option,
+            "is_correct": correct,
+            "correct_option": row["correct_option"],
+            "explanation": row["explanation"],
+            "points_awarded": points,
+            "questions_answered_today": completed_today,
+            "quiz_completed_today": completed_today >= 3,
+            "progress": _paypal_iq_progress(connection, customer_id),
+        }
+
+
+@app.get("/api/paypal-iq/progress")
+def paypal_iq_progress(authorization: str | None = Header(default=None)):
+    customer = _get_authenticated_customer(authorization)
+    with database_connection() as connection:
+        progress = _paypal_iq_progress(connection, customer["id"])
+        today = paypal_iq_local_date()
+        attempts = connection.execute(
+            """
+            SELECT COUNT(*) FROM paypal_iq_quiz_attempts
+            WHERE customer_id = ? AND attempt_date = ?
+            """,
+            (customer["id"], today),
+        ).fetchone()[0]
+    return {
+        "progress": progress,
+        "questions_answered_today": attempts,
+        "daily_question_limit": 3,
+    }
+
+
+class PayPalIQFactUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=5, max_length=180)
+    fact_text: str | None = Field(default=None, min_length=10, max_length=2000)
+    explanation: str | None = Field(default=None, min_length=10, max_length=3000)
+    category: str | None = Field(default=None, min_length=2, max_length=80)
+    country_scope: Literal["GLOBAL", "COUNTRY"] | None = None
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    source_url: str | None = Field(default=None, min_length=10, max_length=1000)
+    source_title: str | None = Field(default=None, min_length=3, max_length=250)
+    source_type: str | None = Field(default=None, min_length=2, max_length=50)
+    source_excerpt: str | None = Field(default=None, max_length=2000)
+    difficulty: Literal["BEGINNER", "INTERMEDIATE", "ADVANCED"] | None = None
+
+
+@app.patch("/api/admin/paypal-iq/facts/{fact_id}")
+def update_paypal_iq_fact(
+    fact_id: str,
+    request: PayPalIQFactUpdateRequest,
+    admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(admin_token)
+
+    updates = request.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fact fields supplied.")
+
+    if "country_code" in updates and updates["country_code"]:
+        updates["country_code"] = updates["country_code"].strip().upper()
+
+    if "country_scope" in updates or "country_code" in updates:
+        with database_connection() as connection:
+            current = connection.execute(
+                "SELECT country_scope, country_code, status FROM paypal_iq_facts WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
+            if current is None:
+                raise HTTPException(status_code=404, detail="PayPal IQ fact not found.")
+            scope = updates.get("country_scope", current["country_scope"])
+            code = updates.get("country_code", current["country_code"])
+            if (scope == "GLOBAL" and code is not None) or (scope == "COUNTRY" and not code):
+                raise HTTPException(status_code=400, detail="Country scope and country code are inconsistent.")
+            if current["status"] == "PUBLISHED":
+                raise HTTPException(status_code=409, detail="Published facts cannot be edited.")
+
+    if "source_url" in updates:
+        from urllib.parse import urlparse
+        parsed = urlparse(updates["source_url"])
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise HTTPException(status_code=422, detail="Source URL must use HTTPS.")
+
+    updates["status"] = "DRAFT"
+    updates["verified_at"] = None
+    updates["review_at"] = None
+    updates["updated_at"] = utc_now()
+
+    assignments = ", ".join(f"{field} = ?" for field in updates)
+    with database_connection() as connection:
+        cursor = connection.execute(
+            f"UPDATE paypal_iq_facts SET {assignments}, fact_version = fact_version + 1 WHERE id = ? AND status != 'PUBLISHED'",
+            (*updates.values(), fact_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Editable fact not found.")
+
+    return {"status": "updated", "fact_id": fact_id, "fact_status": "DRAFT"}
 
 
